@@ -15,6 +15,7 @@ final class AppStrings {
       EDITOR,
       FONT_SIZE,
       TAB_SIZE,
+      FILE_TEMPLATE,
       AUTO_CLOSE_BRACKETS_AND_QUOTES,
       CONSOLE,
       APPEARANCE,
@@ -60,6 +61,7 @@ final class AppStrings {
       CREATED_FOLDER,
       COULD_NOT_CREATE_FILE,
       CHOOSE_WRITABLE_FOLDER_FIRST,
+      EXAMPLE_PROJECT_READ_ONLY,
       DELETE_FOLDER,
       DELETE_FILE,
       DELETE_QUESTION,
@@ -167,6 +169,7 @@ final class AppStrings {
          case EDITOR: return tr("Editor", "Редактор");
          case FONT_SIZE: return tr("Font Size", "Размер шрифта");
          case TAB_SIZE: return tr("Tab Size", "Размер табуляции");
+         case FILE_TEMPLATE: return tr("File Template", "Шаблон файла");
          case AUTO_CLOSE_BRACKETS_AND_QUOTES: return tr("Auto-close Brackets and Quotes", "Автозакрытие скобок и кавычек");
          case CONSOLE: return tr("Console", "Консоль");
          case APPEARANCE: return tr("Appearance", "Внешний вид");
@@ -212,6 +215,7 @@ final class AppStrings {
          case CREATED_FOLDER: return tr("Created folder %s.", "Создана папка %s.");
          case COULD_NOT_CREATE_FILE: return tr("Could not create file.", "Не удалось создать файл.");
          case CHOOSE_WRITABLE_FOLDER_FIRST: return tr("Choose a writable folder first.", "Сначала выбери папку с доступом на запись.");
+         case EXAMPLE_PROJECT_READ_ONLY: return tr("Example projects are read-only.", "Примеры доступны только для чтения.");
          case DELETE_FOLDER: return tr("Delete folder", "Удалить папку");
          case DELETE_FILE: return tr("Delete file", "Удалить файл");
          case DELETE_QUESTION: return tr("Delete %s?", "Удалить %s?");

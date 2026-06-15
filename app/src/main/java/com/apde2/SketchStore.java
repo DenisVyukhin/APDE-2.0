@@ -2,6 +2,7 @@ package com.apde2;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.res.AssetManager;
 import android.os.Build;
 import android.os.Environment;
 
@@ -13,6 +14,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -32,6 +34,7 @@ final class SketchStore {
    private static final String SKETCHBOOK_DIR = "Sketchbook";
    private static final String SKETCHES_DIR = "Sketches";
    private static final String EXAMPLES_DIR = "Examples";
+   private static final String EXAMPLES_ASSET_DIR = "Examples";
    private static final String LIBRARY_EXAMPLES_DIR = "Library Examples";
    private static final String RECENT_DIR = "Recent";
    private static final String DATA_DIR = "data";
@@ -41,6 +44,7 @@ final class SketchStore {
    private static final String SKETCH_PROPERTIES_FILE = "sketch.properties";
    private static final int MAX_RECENT_PROJECTS = 12;
 
+   private final Context context;
    private final SharedPreferences prefs;
    private final File preferredSketchbookDir;
    private final File fallbackSketchbookDir;
@@ -51,8 +55,10 @@ final class SketchStore {
    private File libraryExamplesDir;
    private File recentDir;
    private File sketchDir;
+   private String bundledExamplesRootPath;
 
    SketchStore(Context context) {
+      this.context = context.getApplicationContext();
       prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
       preferredSketchbookDir = new File(Environment.getExternalStorageDirectory(), SKETCHBOOK_DIR);
       fallbackSketchbookDir = new File(context.getFilesDir(), SKETCHBOOK_DIR);
@@ -74,7 +80,7 @@ final class SketchStore {
 
    void save(List<SketchFile> files, int activeIndex) {
       ensureSketchDir();
-      if (sketchDir == null) {
+      if (sketchDir == null || isCurrentProjectReadOnly()) {
          rememberActiveIndex(activeIndex);
          return;
       }
@@ -99,7 +105,7 @@ final class SketchStore {
 
    boolean saveFile(SketchFile file, int activeIndex) {
       ensureSketchDir();
-      if (sketchDir == null) {
+      if (sketchDir == null || isCurrentProjectReadOnly()) {
          rememberActiveIndex(activeIndex);
          return false;
       }
@@ -163,7 +169,17 @@ final class SketchStore {
 
    boolean isSketchProject(File projectDir) {
       ensureSketchDir();
-      return isDirectSketchesChild(projectDir) && isSketchProjectDir(projectDir);
+      return (isDirectSketchesChild(projectDir) || isDirectExamplesChild(projectDir)) && isSketchProjectDir(projectDir);
+   }
+
+   boolean isExamplesProject(File projectDir) {
+      ensureSketchDir();
+      return isDirectExamplesChild(projectDir) && isSketchProjectDir(projectDir);
+   }
+
+   boolean isCurrentProjectReadOnly() {
+      ensureSketchDir();
+      return isExamplesProject(sketchDir);
    }
 
    List<File> sketchProjects() {
@@ -197,6 +213,7 @@ final class SketchStore {
       libraryExamplesDir = null;
       recentDir = null;
       sketchDir = null;
+      bundledExamplesRootPath = null;
    }
 
    void switchProject(String projectName) {
@@ -216,7 +233,9 @@ final class SketchStore {
       }
       sketchDir = nextDir;
       rememberCurrentProject(nextDir);
-      ensureProjectDefaults(nextDir);
+      if (!isExamplesProject(nextDir)) {
+         ensureProjectDefaults(nextDir);
+      }
    }
 
    File createNewSketchProject() {
@@ -276,6 +295,9 @@ final class SketchStore {
 
    boolean deleteSketchFile(SketchFile sketchFile) {
       ensureSketchDir();
+      if (isCurrentProjectReadOnly()) {
+         return false;
+      }
       File target = existingFileFor(sketchFile);
       if (target == null || !target.exists()) {
          return true;
@@ -285,7 +307,7 @@ final class SketchStore {
 
    boolean renameSketchFile(SketchFile sketchFile, String newName) {
       ensureSketchDir();
-      if (sketchDir == null || sketchFile == null) {
+      if (sketchDir == null || sketchFile == null || isCurrentProjectReadOnly()) {
          return false;
       }
       File source = existingFileFor(sketchFile);
@@ -450,6 +472,7 @@ final class SketchStore {
       ensureDirectory(examplesDir);
       ensureDirectory(libraryExamplesDir);
       ensureDirectory(recentDir);
+      ensureBundledExamples();
    }
 
    private void ensureDirectory(File dir) {
@@ -755,8 +778,77 @@ final class SketchStore {
       return parent != null && sameFile(parent, sketchesDir);
    }
 
+   private boolean isDirectExamplesChild(File file) {
+      if (file == null || examplesDir == null) {
+         return false;
+      }
+      File parent = file.getParentFile();
+      return parent != null && sameFile(parent, examplesDir);
+   }
+
    private boolean isManagedProject(File file) {
       return isDirectSketchesChild(file);
+   }
+
+   private void ensureBundledExamples() {
+      if (context == null || examplesDir == null) {
+         return;
+      }
+      String rootPath = examplesDir.getAbsolutePath();
+      if (rootPath.equals(bundledExamplesRootPath)) {
+         return;
+      }
+      if (copyAssetTreeIfMissing(context.getAssets(), EXAMPLES_ASSET_DIR, examplesDir)) {
+         bundledExamplesRootPath = rootPath;
+      }
+   }
+
+   private boolean copyAssetTreeIfMissing(AssetManager assets, String assetPath, File target) {
+      String[] children;
+      try {
+         children = assets.list(assetPath);
+      } catch (IOException exception) {
+         return false;
+      }
+      if (children != null && children.length > 0) {
+         if (!target.exists() && !target.mkdirs()) {
+            return false;
+         }
+         for (String child : children) {
+            if (!copyAssetTreeIfMissing(assets, assetPath + "/" + child, new File(target, child))) {
+               return false;
+            }
+         }
+         return true;
+      }
+      if (!looksLikeAssetFile(assetPath)) {
+         return target.exists() || target.mkdirs();
+      }
+      if (target.exists()) {
+         return true;
+      }
+      File parent = target.getParentFile();
+      if (parent != null && !parent.exists() && !parent.mkdirs()) {
+         return false;
+      }
+      try (InputStream input = assets.open(assetPath);
+           FileOutputStream output = new FileOutputStream(target)) {
+         byte[] buffer = new byte[8192];
+         int read;
+         while ((read = input.read(buffer)) != -1) {
+            output.write(buffer, 0, read);
+         }
+         output.getFD().sync();
+         return true;
+      } catch (IOException exception) {
+         return false;
+      }
+   }
+
+   private boolean looksLikeAssetFile(String assetPath) {
+      int slash = assetPath.lastIndexOf('/');
+      String name = slash >= 0 ? assetPath.substring(slash + 1) : assetPath;
+      return name.indexOf('.') > 0;
    }
 
    private boolean isSketchProjectDir(File dir) {

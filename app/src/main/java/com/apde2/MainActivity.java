@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.ColorStateList;
+import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.Typeface;
@@ -174,6 +175,7 @@ public final class MainActivity extends ComponentActivity {
    private DocumentFile fileRoot;
    private DocumentFile selectedFolder;
    private final Set<String> expandedFolders = new HashSet<>();
+   private boolean fileTreeDirty = true;
    private int activeIndex = -1;
    private int activeConsoleTab = LOG_INFO;
    private int consoleHeight;
@@ -571,6 +573,9 @@ public final class MainActivity extends ComponentActivity {
          if (editor == null || files.isEmpty()) {
             return;
          }
+         if (!ensureCurrentProjectWritable()) {
+            return;
+         }
          if (!editor.undo()) {
             addConsoleEntry(LOG_INFO, s(AppStrings.Key.NOTHING_TO_UNDO));
          }
@@ -582,6 +587,9 @@ public final class MainActivity extends ComponentActivity {
       ControlIconButton redo = new ControlIconButton(this, theme, ControlIconButton.MODE_REDO);
       redo.setOnClickListener(view -> {
          if (editor == null || files.isEmpty()) {
+            return;
+         }
+         if (!ensureCurrentProjectWritable()) {
             return;
          }
          if (!editor.redo()) {
@@ -622,6 +630,9 @@ public final class MainActivity extends ComponentActivity {
          @Override
          public void afterTextChanged(Editable editable) {
             updateLineNumbers();
+            if (activeProjectReadOnly()) {
+               return;
+            }
             if (!loadingTab && activeIndex >= 0 && activeIndex < files.size()) {
                files.get(activeIndex).code = editable.toString();
                persistCurrentFile();
@@ -703,10 +714,7 @@ public final class MainActivity extends ComponentActivity {
       consoleHeader.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
 
       ControlIconButton clear = new ControlIconButton(this, theme, ControlIconButton.MODE_CLEAR);
-      clear.setOnClickListener(view -> {
-         consoleEntries.clear();
-         renderConsole();
-      });
+      clear.setOnClickListener(view -> clearConsole());
       consoleHeader.addView(clear, iconParams());
       panel.addView(consoleHeader, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
 
@@ -753,9 +761,7 @@ public final class MainActivity extends ComponentActivity {
       flushAutosave();
       runHandler.removeCallbacks(flushPreviewConsoleRunnable);
       previewConsoleFlushScheduled = false;
-      pendingPreviewConsoleOutput.clear();
-      openPreviewConsoleEntry = null;
-      consoleEntries.clear();
+      clearConsole();
       openConsoleForRun();
       File projectDir = store.currentProjectDir();
       if (projectDir == null) {
@@ -868,6 +874,9 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void addTab() {
+      if (!ensureCurrentProjectWritable()) {
+         return;
+      }
       flushAutosave();
       showAddFileDialog();
    }
@@ -926,6 +935,9 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void removeTab() {
+      if (!ensureCurrentProjectWritable()) {
+         return;
+      }
       if (files.size() <= 1) {
          if (!files.isEmpty()) {
             SketchFile removedFile = files.get(activeIndex);
@@ -995,6 +1007,9 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void persistCurrentFile() {
+      if (activeProjectReadOnly()) {
+         return;
+      }
       if (editor != null && editorLoadedFile && !files.isEmpty() && activeIndex >= 0 && activeIndex < files.size()) {
          SketchFile file = files.get(activeIndex);
          file.code = editor.code();
@@ -1064,11 +1079,16 @@ public final class MainActivity extends ComponentActivity {
 
    private void syncEditorState() {
       boolean hasFile = !files.isEmpty() && activeIndex >= 0 && activeIndex < files.size();
+      boolean readOnly = activeProjectReadOnly();
       if (editor != null) {
          editor.setVisibility(hasFile ? View.VISIBLE : View.GONE);
          editor.setEnabled(hasFile);
-         editor.setFocusable(hasFile);
-         editor.setFocusableInTouchMode(hasFile);
+         editor.setFocusable(hasFile && !readOnly);
+         editor.setFocusableInTouchMode(hasFile && !readOnly);
+         if (readOnly) {
+            editor.clearFocus();
+            editor.setCursorVisible(false);
+         }
          if (!hasFile) {
             loadingTab = true;
             editor.setCode("");
@@ -1097,7 +1117,6 @@ public final class MainActivity extends ComponentActivity {
       if (fileRoot == null || !fileRoot.exists()) {
          resetToInternalSketchbook();
       }
-      renderFileTree();
       if (filePanelScrim == null || filePanelContainer == null) {
          return;
       }
@@ -1111,6 +1130,9 @@ public final class MainActivity extends ComponentActivity {
       filePanelContainer.setVisibility(View.VISIBLE);
       filePanelContainer.setTranslationX(-dp(330));
       filePanelContainer.animate().translationX(0f).setDuration(180).start();
+      if (fileTreeDirty) {
+         filePanelContainer.postDelayed(this::renderFileTreeIfDirty, 80);
+      }
    }
 
    private void resetToInternalSketchbook() {
@@ -1392,6 +1414,7 @@ public final class MainActivity extends ComponentActivity {
       if (fileTreeContent == null) {
          return;
       }
+      fileTreeDirty = false;
       fileTreeContent.removeAllViews();
       if (fileRoot == null || !fileRoot.exists()) {
          filePanelTitle.setText(s(AppStrings.Key.FILES));
@@ -1417,6 +1440,16 @@ public final class MainActivity extends ComponentActivity {
       }
    }
 
+   private void renderFileTreeIfDirty() {
+      if (fileTreeDirty) {
+         renderFileTree();
+      }
+   }
+
+   private void markFileTreeDirty() {
+      fileTreeDirty = true;
+   }
+
    private void renderApdeSketchbookTree() {
       updateFilePanelTitle();
       DocumentFile sketches = sketchbookSection(SKETCHES_DIR_NAME, store == null ? null : store.sketchesDir());
@@ -1431,7 +1464,7 @@ public final class MainActivity extends ComponentActivity {
 
       renderSketchbookSection(EXAMPLES_DIR_NAME, SECTION_EXAMPLES, examples);
       if (expandedFolders.contains(SECTION_EXAMPLES)) {
-         renderSectionDirectoryContents(examples, 1, false);
+         renderSectionDirectoryContents(examples, 1, true);
       }
 
       renderSketchbookSection(LIBRARY_EXAMPLES_DIR_NAME, SECTION_LIBRARY_EXAMPLES, libraryExamples);
@@ -1488,13 +1521,16 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private File localSketchProjectForDocument(DocumentFile document) {
-      if (document == null || !document.isDirectory() || !hasDirectPdeFile(document)) {
+      if (document == null || !document.isDirectory()) {
          return null;
       }
       Uri uri = document.getUri();
       if (uri != null && "file".equalsIgnoreCase(uri.getScheme()) && uri.getPath() != null) {
          File project = new File(uri.getPath());
          return store != null && store.isSketchProject(project) ? project : null;
+      }
+      if (!hasDirectPdeFile(document)) {
+         return null;
       }
       File sketchesDir = store == null ? null : store.sketchesDir();
       File project = sketchesDir == null ? null : new File(sketchesDir, displayName(document));
@@ -1632,6 +1668,9 @@ public final class MainActivity extends ComponentActivity {
          addConsoleEntry(LOG_INFO, sf(AppStrings.Key.OPENED_FOLDER, projectDir.getName()));
       });
       row.setOnLongClickListener(view -> {
+         if (store != null && store.isExamplesProject(projectDir)) {
+            return true;
+         }
          if (settings != null && settings.hapticEnabled()) {
             view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
          }
@@ -1768,6 +1807,14 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void showFileNodeMenu(View anchor, DocumentFile document) {
+      if (isReadOnlyDocument(document)) {
+         if (document.isFile()) {
+            showContextMenu(anchor, dp(208),
+               new ContextMenuItem(s(AppStrings.Key.OPEN), R.drawable.context_menu_open_in_new_24, () -> openDocumentFile(document))
+            );
+         }
+         return;
+      }
       if (document.isDirectory()) {
          showContextMenu(anchor, dp(224),
             new ContextMenuItem(s(AppStrings.Key.NEW_FILE_MENU), R.drawable.context_menu_note_add_24, this::createFileInSelectedFolder),
@@ -1844,7 +1891,7 @@ public final class MainActivity extends ComponentActivity {
 
    private DocumentFile writableSelectedFolder() {
       DocumentFile folder = selectedFolder != null ? selectedFolder : fileRoot;
-      if (isSystemSketchbookSection(folder) || isSketchProjectFolder(folder)) {
+      if (isSystemSketchbookSection(folder) || isSketchProjectFolder(folder) || isReadOnlyDocument(folder)) {
          showToast(s(AppStrings.Key.CANNOT_CREATE_IN_SYSTEM_FOLDER));
          return null;
       }
@@ -1895,11 +1942,55 @@ public final class MainActivity extends ComponentActivity {
       return left != null && right != null && fileKey(left).equals(fileKey(right));
    }
 
+   private boolean activeProjectReadOnly() {
+      return store != null && store.isCurrentProjectReadOnly();
+   }
+
+   private boolean ensureCurrentProjectWritable() {
+      if (!activeProjectReadOnly()) {
+         return true;
+      }
+      showReadOnlyProjectMessage();
+      return false;
+   }
+
+   private void showReadOnlyProjectMessage() {
+      showToast(s(AppStrings.Key.EXAMPLE_PROJECT_READ_ONLY));
+   }
+
+   private boolean isReadOnlyDocument(DocumentFile document) {
+      if (document == null || store == null) {
+         return false;
+      }
+      String path = localFilePath(document);
+      File examplesDir = store.examplesDir();
+      return path != null && examplesDir != null && isInsideDirectory(new File(path), examplesDir);
+   }
+
+   private boolean isInsideDirectory(File file, File directory) {
+      if (file == null || directory == null) {
+         return false;
+      }
+      try {
+         String child = file.getCanonicalPath();
+         String root = directory.getCanonicalPath();
+         return child.equals(root) || child.startsWith(root + File.separator);
+      } catch (IOException exception) {
+         String child = file.getAbsolutePath();
+         String root = directory.getAbsolutePath();
+         return child.equals(root) || child.startsWith(root + File.separator);
+      }
+   }
+
    private void showToast(String message) {
       Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
    }
 
    private void showDeleteDocumentConfirmation(DocumentFile document) {
+      if (isReadOnlyDocument(document)) {
+         showReadOnlyProjectMessage();
+         return;
+      }
       String title = document.isDirectory() ? s(AppStrings.Key.DELETE_FOLDER) : s(AppStrings.Key.DELETE_FILE);
       String message = sf(AppStrings.Key.DELETE_QUESTION, displayName(document));
       showConfirmationDialog(title, message, s(AppStrings.Key.DELETE), () -> {
@@ -1935,6 +2026,10 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void showRenameDocumentDialog(DocumentFile document) {
+      if (isReadOnlyDocument(document)) {
+         showReadOnlyProjectMessage();
+         return;
+      }
       String oldUri = document.getUri().toString();
       showTextInputDialog(s(AppStrings.Key.RENAME), displayName(document), displayName(document), s(AppStrings.Key.RENAME), value -> {
          String name = normalizeDocumentName(value);
@@ -1977,7 +2072,19 @@ public final class MainActivity extends ComponentActivity {
       if (document == null || !document.isFile() || !isPdeDocument(document)) {
          return;
       }
-      openDocumentFile(document);
+
+      File localFile = localFileFromUri(intent.getData());
+      if (localFile == null) {
+         localFile = queryLocalFileFromContentUri(intent.getData());
+      }
+      File projectDir = projectDirForPdeFile(localFile);
+      if (projectDir != null) {
+         openInternalProject(projectDir);
+         openLocalProjectFile(localFile);
+         addConsoleEntry(LOG_INFO, sf(AppStrings.Key.OPENED_FOLDER, projectDir.getName()));
+         return;
+      }
+      openExternalPdeAsNewSketch(document);
    }
 
    private DocumentFile externalDocument(Uri uri) {
@@ -1989,6 +2096,109 @@ public final class MainActivity extends ComponentActivity {
          return path == null || path.isEmpty() ? null : DocumentFile.fromFile(new File(path));
       }
       return DocumentFile.fromSingleUri(this, uri);
+   }
+
+   private File localFileFromUri(Uri uri) {
+      if (uri == null) {
+         return null;
+      }
+      if ("file".equalsIgnoreCase(uri.getScheme())) {
+         String path = uri.getPath();
+         return path == null || path.isEmpty() ? null : new File(path);
+      }
+      if (!"content".equalsIgnoreCase(uri.getScheme()) || !DocumentsContract.isDocumentUri(this, uri)) {
+         return null;
+      }
+      try {
+         String documentId = DocumentsContract.getDocumentId(uri);
+         return fileFromExternalStorageDocumentId(documentId);
+      } catch (RuntimeException ignored) {
+         return null;
+      }
+   }
+
+   private File queryLocalFileFromContentUri(Uri uri) {
+      if (uri == null || !"content".equalsIgnoreCase(uri.getScheme())) {
+         return null;
+      }
+      try (Cursor cursor = getContentResolver().query(uri, new String[] {"_data"}, null, null, null)) {
+         if (cursor == null || !cursor.moveToFirst()) {
+            return null;
+         }
+         int index = cursor.getColumnIndex("_data");
+         if (index < 0) {
+            return null;
+         }
+         String path = cursor.getString(index);
+         return path == null || path.trim().isEmpty() ? null : new File(path);
+      } catch (RuntimeException ignored) {
+         return null;
+      }
+   }
+
+   private File fileFromExternalStorageDocumentId(String documentId) {
+      if (documentId == null || documentId.trim().isEmpty()) {
+         return null;
+      }
+      if (documentId.startsWith("raw:")) {
+         return new File(documentId.substring(4));
+      }
+      int separator = documentId.indexOf(':');
+      if (separator < 0) {
+         return null;
+      }
+      String volume = documentId.substring(0, separator);
+      String relativePath = documentId.substring(separator + 1);
+      if ("primary".equalsIgnoreCase(volume)) {
+         return new File(Environment.getExternalStorageDirectory(), relativePath);
+      }
+      return new File(new File("/storage", volume), relativePath);
+   }
+
+   private File projectDirForPdeFile(File file) {
+      if (file == null || !file.getName().toLowerCase(Locale.US).endsWith(".pde")) {
+         return null;
+      }
+      File parent = file.getParentFile();
+      return parent == null || !parent.isDirectory() ? null : parent;
+   }
+
+   private void openExternalPdeAsNewSketch(DocumentFile document) {
+      flushAutosave();
+      clearConsole();
+      File sketchesRoot = store == null ? null : store.sketchesDir();
+      if (sketchesRoot == null) {
+         addConsoleEntry(LOG_ERROR, s(AppStrings.Key.COULD_NOT_CREATE_FOLDER));
+         activeConsoleTab = LOG_ERROR;
+         renderConsole();
+         return;
+      }
+      String sourceName = safePdeFileName(displayName(document));
+      String projectBaseName = sourceName.substring(0, sourceName.length() - 4);
+      File projectDir = new File(sketchesRoot, uniqueProjectFolderName(sanitizeProjectFolderName(projectBaseName)));
+      if (!projectDir.mkdirs() && !projectDir.isDirectory()) {
+         addConsoleEntry(LOG_ERROR, s(AppStrings.Key.COULD_NOT_CREATE_FOLDER));
+         activeConsoleTab = LOG_ERROR;
+         renderConsole();
+         return;
+      }
+      if (!copyDocumentTreeToDirectory(document, new File(projectDir, sourceName))) {
+         addConsoleEntry(LOG_ERROR, sf(AppStrings.Key.COULD_NOT_READ, displayName(document)));
+         activeConsoleTab = LOG_ERROR;
+         renderConsole();
+         return;
+      }
+      openInternalProject(projectDir, false);
+      openLocalProjectFile(new File(projectDir, sourceName));
+      addConsoleEntry(LOG_INFO, sf(AppStrings.Key.OPENED_FOLDER, projectDir.getName()));
+   }
+
+   private String safePdeFileName(String name) {
+      String safeName = safeLocalChildName(name);
+      if (!safeName.toLowerCase(Locale.US).endsWith(".pde")) {
+         safeName += ".pde";
+      }
+      return safeName;
    }
 
    private boolean isPdeDocument(DocumentFile document) {
@@ -2112,6 +2322,7 @@ public final class MainActivity extends ComponentActivity {
       if (saveCurrentProjectFirst) {
          flushAutosave();
       }
+      clearConsole();
       store.switchProject(projectDir);
       files.clear();
       files.addAll(store.loadFiles());
@@ -2142,11 +2353,27 @@ public final class MainActivity extends ComponentActivity {
       store.save(files, activeIndex);
    }
 
+   private void openLocalProjectFile(File localFile) {
+      if (localFile == null || files.isEmpty()) {
+         return;
+      }
+      for (int i = 0; i < files.size(); i++) {
+         SketchFile file = files.get(i);
+         if ((file.localFilePath != null && samePath(new File(file.localFilePath), localFile))
+            || file.name.equalsIgnoreCase(localFile.getName())) {
+            openTab(i);
+            store.save(files, activeIndex);
+            return;
+         }
+      }
+   }
+
    private void syncFilePanelToCurrentProject() {
       if (store == null) {
          fileRoot = null;
          selectedFolder = null;
          expandedFolders.clear();
+         markFileTreeDirty();
          return;
       }
       File currentProjectDir = store.currentProjectDir();
@@ -2158,7 +2385,12 @@ public final class MainActivity extends ComponentActivity {
       if (fileRoot != null) {
          expandedFolders.add(fileKey(fileRoot));
       }
-      expandedFolders.add(SECTION_SKETCHES);
+      if (currentProjectDir != null && store.isExamplesProject(currentProjectDir)) {
+         expandedFolders.add(SECTION_EXAMPLES);
+      } else {
+         expandedFolders.add(SECTION_SKETCHES);
+      }
+      markFileTreeDirty();
    }
 
    private File localProjectDir(DocumentFile document) {
@@ -2172,12 +2404,15 @@ public final class MainActivity extends ComponentActivity {
       }
       File file = new File(path);
       File sketchesDir = store.sketchesDir();
-      if (sketchesDir == null) {
+      File examplesDir = store.examplesDir();
+      if (sketchesDir == null && examplesDir == null) {
          return null;
       }
       File candidate = document.isDirectory() ? file : file.getParentFile();
       while (candidate != null && candidate.getParentFile() != null) {
-         if (samePath(candidate.getParentFile(), sketchesDir)) {
+         File parent = candidate.getParentFile();
+         if ((sketchesDir != null && samePath(parent, sketchesDir))
+            || (examplesDir != null && samePath(parent, examplesDir))) {
             return candidate;
          }
          candidate = candidate.getParentFile();
@@ -2460,6 +2695,16 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void showProjectMenu(View anchor) {
+      if (activeProjectReadOnly()) {
+         showContextMenu(anchor, dp(274),
+            new ContextMenuItem(s(AppStrings.Key.NEW_SKETCH), R.drawable.context_menu_note_add_24, this::createNewSketchProject),
+            new ContextMenuItem(s(AppStrings.Key.RECENT_SKETCHES), R.drawable.context_menu_history_24, this::showRecentProjectsDialog),
+            new ContextMenuItem(s(AppStrings.Key.TOOLS), R.drawable.context_menu_build_24, this::showToolsDialog),
+            new ContextMenuItem(s(AppStrings.Key.SKETCH_PROPERTIES), R.drawable.context_menu_tune_24, this::openSketchProperties),
+            new ContextMenuItem(s(AppStrings.Key.SETTINGS), R.drawable.context_menu_settings_24, this::openSettings)
+         );
+         return;
+      }
       showContextMenu(anchor, dp(274),
          new ContextMenuItem(s(AppStrings.Key.NEW_SKETCH), R.drawable.context_menu_note_add_24, this::createNewSketchProject),
          new ContextMenuItem(s(AppStrings.Key.RENAME_SKETCH), R.drawable.context_menu_edit_24, this::renameCurrentSketch),
@@ -2634,10 +2879,46 @@ public final class MainActivity extends ComponentActivity {
          return;
       }
       openInternalProject(projectDir, false);
+      applyFileTemplateToNewSketch();
       addConsoleEntry(LOG_INFO, sf(AppStrings.Key.OPENED_FOLDER, projectDir.getName()));
    }
 
+   private void applyFileTemplateToNewSketch() {
+      if (settings == null || !settings.fileTemplateEnabled() || files.isEmpty()) {
+         return;
+      }
+      activeIndex = 0;
+      files.get(activeIndex).code = defaultSketchTemplate(settings.tabSize());
+      loadingTab = true;
+      editor.setCode(files.get(activeIndex).code);
+      loadingTab = false;
+      editorLoadedFile = true;
+      updateLineNumbers();
+      store.save(files, activeIndex);
+   }
+
+   private String defaultSketchTemplate(int tabSize) {
+      String indent = repeatString(" ", Math.max(2, Math.min(8, tabSize)));
+      return "\n\nvoid setup() {\n"
+         + indent + "fullScreen();\n"
+         + "}\n\n"
+         + "void draw() {\n"
+         + indent + "background(255);\n"
+         + "}";
+   }
+
+   private String repeatString(String value, int count) {
+      StringBuilder builder = new StringBuilder(value.length() * Math.max(0, count));
+      for (int i = 0; i < count; i++) {
+         builder.append(value);
+      }
+      return builder.toString();
+   }
+
    private void saveCurrentProjectToSketchbook() {
+      if (!ensureCurrentProjectWritable()) {
+         return;
+      }
       flushAutosave();
       File savedProject = store.saveCurrentProjectToSketchbook();
       if (savedProject == null) {
@@ -2651,6 +2932,9 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void moveCurrentProjectToSketchbook() {
+      if (!ensureCurrentProjectWritable()) {
+         return;
+      }
       File sketchbookRoot = store.sketchesDir();
       File currentInternalProject = store.currentProjectDir();
       if (fileRoot == null || isSketchbookRoot(fileRoot)) {
@@ -2688,6 +2972,9 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void renameCurrentSketch() {
+      if (!ensureCurrentProjectWritable()) {
+         return;
+      }
       File currentProjectDir = store.currentProjectDir();
       if (currentProjectDir == null) {
          return;
@@ -2697,6 +2984,10 @@ public final class MainActivity extends ComponentActivity {
 
    private void showRenameProjectDialog(File projectDir) {
       if (store == null || projectDir == null) {
+         return;
+      }
+      if (store.isExamplesProject(projectDir)) {
+         showReadOnlyProjectMessage();
          return;
       }
       File currentProjectDir = store.currentProjectDir();
@@ -2742,6 +3033,9 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void deleteCurrentSketch() {
+      if (!ensureCurrentProjectWritable()) {
+         return;
+      }
       File currentProjectDir = store.currentProjectDir();
       if (currentProjectDir == null) {
          return;
@@ -2751,6 +3045,10 @@ public final class MainActivity extends ComponentActivity {
 
    private void showDeleteProjectConfirmation(File projectDir) {
       if (store == null || projectDir == null) {
+         return;
+      }
+      if (store.isExamplesProject(projectDir)) {
+         showReadOnlyProjectMessage();
          return;
       }
       String name = projectDir.getName();
@@ -2792,6 +3090,9 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void autoFormatActivePde() {
+      if (!ensureCurrentProjectWritable()) {
+         return;
+      }
       if (editor == null) {
          addConsoleEntry(LOG_ERROR, s(AppStrings.Key.NO_EDITOR_AVAILABLE));
          activeConsoleTab = LOG_ERROR;
@@ -3030,6 +3331,9 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void replaceCurrentFindMatch(FindSession session, String query, String replacement, boolean matchCase, TextView status) {
+      if (!ensureCurrentProjectWritable()) {
+         return;
+      }
       session.matches = findMatches(editor.code(), query, matchCase);
       if (query == null || query.isEmpty()) {
          session.index = -1;
@@ -3069,6 +3373,9 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void replaceAllFindMatches(FindSession session, String query, String replacement, boolean matchCase, TextView status) {
+      if (!ensureCurrentProjectWritable()) {
+         return;
+      }
       List<FindMatch> matches = findMatches(editor.code(), query, matchCase);
       if (query == null || query.isEmpty()) {
          session.index = -1;
@@ -3479,6 +3786,9 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void showTabMenu(View anchor) {
+      if (activeProjectReadOnly()) {
+         return;
+      }
       showContextMenu(anchor, dp(268),
          new ContextMenuItem(s(AppStrings.Key.NEW_TAB), R.drawable.context_menu_note_add_24, this::addTab),
          new ContextMenuItem(s(AppStrings.Key.RENAME), R.drawable.context_menu_edit_24, this::showRenameTabDialog),
@@ -3720,6 +4030,9 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void showRenameTabDialog() {
+      if (!ensureCurrentProjectWritable()) {
+         return;
+      }
       if (files.isEmpty() || activeIndex < 0 || activeIndex >= files.size()) {
          return;
       }
@@ -4167,6 +4480,16 @@ public final class MainActivity extends ComponentActivity {
       if (consolePanel != null) {
          consolePanel.setTranslationY(0f);
       }
+   }
+
+   private void clearConsole() {
+      runHandler.removeCallbacks(flushPreviewConsoleRunnable);
+      previewConsoleFlushScheduled = false;
+      pendingPreviewConsoleOutput.clear();
+      openPreviewConsoleEntry = null;
+      consoleEntries.clear();
+      activeConsoleTab = LOG_INFO;
+      renderConsole();
    }
 
    private void addConsoleEntry(int type, String message) {

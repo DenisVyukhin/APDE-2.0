@@ -17,6 +17,7 @@ final class AppSettings {
    private static final String KEY_HAPTIC = "haptic";
    private static final String KEY_EDITOR_FONT = "editor_font";
    private static final String KEY_TAB_SIZE = "tab_size";
+   private static final String KEY_FILE_TEMPLATE = "file_template";
    private static final String KEY_AUTO_CLOSE = "auto_close_pairs";
    private static final String KEY_CONSOLE_FONT = "console_font";
    private static final String KEY_THEME = "theme";
@@ -60,6 +61,14 @@ final class AppSettings {
 
    void setTabSize(int value) {
       prefs.edit().putInt(KEY_TAB_SIZE, clamp(value, 2, 8)).apply();
+   }
+
+   boolean fileTemplateEnabled() {
+      return prefs.getBoolean(KEY_FILE_TEMPLATE, false);
+   }
+
+   void setFileTemplateEnabled(boolean enabled) {
+      prefs.edit().putBoolean(KEY_FILE_TEMPLATE, enabled).apply();
    }
 
    boolean autoClosePairs() {

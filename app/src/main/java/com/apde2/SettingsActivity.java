@@ -122,6 +122,7 @@ public final class SettingsActivity extends ComponentActivity {
       addSection(root, s(AppStrings.Key.EDITOR),
          numberRow(s(AppStrings.Key.FONT_SIZE), settings.editorFontSizeSp(), 10, 28, settings::setEditorFontSizeSp),
          numberRow(s(AppStrings.Key.TAB_SIZE), settings.tabSize(), 2, 8, settings::setTabSize),
+         toggleRow(s(AppStrings.Key.FILE_TEMPLATE), settings.fileTemplateEnabled(), settings::setFileTemplateEnabled),
          toggleRow(s(AppStrings.Key.AUTO_CLOSE_BRACKETS_AND_QUOTES), settings.autoClosePairs(), settings::setAutoClosePairs));
 
       addSection(root, s(AppStrings.Key.CONSOLE),

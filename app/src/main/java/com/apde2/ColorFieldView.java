@@ -10,7 +10,7 @@ import android.graphics.Shader;
 import android.view.MotionEvent;
 import android.view.View;
 
-final class ColorFieldView extends View {
+final class ColorFieldView extends View implements ThemeAware {
    interface Listener {
       void onValueChanged(float saturation, float value);
    }
@@ -27,16 +27,22 @@ final class ColorFieldView extends View {
    private float value = 0.73f;
    private Listener listener;
 
-   ColorFieldView(Context context) {
+   ColorFieldView(Context context, EditorTheme theme) {
       super(context);
       strokePaint.setStyle(Paint.Style.STROKE);
-      strokePaint.setColor(Color.argb(255, 48, 54, 61));
       thumbPaint.setStyle(Paint.Style.STROKE);
       thumbPaint.setStrokeWidth(dp(2));
-      thumbPaint.setColor(Color.WHITE);
       thumbStrokePaint.setStyle(Paint.Style.STROKE);
       thumbStrokePaint.setStrokeWidth(dp(4));
-      thumbStrokePaint.setColor(Color.argb(140, 0, 0, 0));
+      applyTheme(theme);
+   }
+
+   @Override
+   public void applyTheme(EditorTheme theme) {
+      strokePaint.setColor(theme.colorPickerBorder);
+      thumbPaint.setColor(theme.colorPickerThumb);
+      thumbStrokePaint.setColor(theme.colorPickerThumbStroke);
+      invalidate();
    }
 
    void setListener(Listener listener) {

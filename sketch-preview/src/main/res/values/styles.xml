@@ -1,0 +1,8 @@
+<resources>
+   <style name="PreviewTheme" parent="android:style/Theme.Material.NoActionBar">
+      <item name="android:windowNoTitle">true</item>
+      <item name="android:windowActionBar">false</item>
+      <item name="android:windowBackground">#050507</item>
+      <item name="android:colorAccent">#4cc2ff</item>
+   </style>
+</resources>

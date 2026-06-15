@@ -23,6 +23,7 @@ import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,9 +33,9 @@ import androidx.compose.ui.unit.dp
 
 class ControlIconButton(
    context: Context,
-   private val theme: EditorTheme,
+   theme: EditorTheme,
    mode: Int
-) : AbstractComposeView(context) {
+) : AbstractComposeView(context), ThemeAware {
    companion object {
       const val MODE_PLAY = 1
       const val MODE_STOP = 2
@@ -50,6 +51,7 @@ class ControlIconButton(
    }
 
    private var iconMode by mutableIntStateOf(mode)
+   private var currentTheme by mutableStateOf(theme)
 
    init {
       minimumWidth = dpToPx(48)
@@ -58,6 +60,10 @@ class ControlIconButton(
 
    fun setMode(mode: Int) {
       iconMode = mode
+   }
+
+   override fun applyTheme(theme: EditorTheme) {
+      currentTheme = theme
    }
 
    @Composable
@@ -70,7 +76,7 @@ class ControlIconButton(
             modifier = Modifier
                .size(40.dp)
                .border(
-                  BorderStroke(1.dp, Color(theme.border)),
+                  BorderStroke(1.dp, Color(currentTheme.border)),
                   RoundedCornerShape(10.dp)
                ),
             contentAlignment = Alignment.Center
@@ -92,12 +98,12 @@ class ControlIconButton(
                },
                contentDescription = null,
                tint = when (iconMode) {
-                  MODE_PLAY -> Color(theme.play)
-                  MODE_STOP -> Color(theme.stop)
-                  MODE_ADD -> Color(theme.accent)
-                  MODE_ADD_FOLDER -> Color(theme.accent)
-                  MODE_ADD_FILE -> Color(theme.accent)
-                  else -> Color(theme.textMuted)
+                  MODE_PLAY -> Color(currentTheme.play)
+                  MODE_STOP -> Color(currentTheme.stop)
+                  MODE_ADD -> Color(currentTheme.accent)
+                  MODE_ADD_FOLDER -> Color(currentTheme.accent)
+                  MODE_ADD_FILE -> Color(currentTheme.accent)
+                  else -> Color(currentTheme.textMuted)
                },
                modifier = Modifier.size(iconSize())
             )

@@ -1,17 +1,29 @@
 package com.apde2;
 
+import android.content.Context;
 import android.graphics.Color;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.regex.Pattern;
 
 public final class EditorTheme {
+   private static final String THEMES_ASSET = "themes/editor_themes.json";
+
    final int background;
    final int surface;
    final int surfaceSoft;
    final int border;
+   final int scrim;
    final int text;
    final int textMuted;
    final int accent;
@@ -30,6 +42,13 @@ public final class EditorTheme {
    final int string;
    final int comment;
    final int operator;
+   final int colorPickerBorder;
+   final int colorPickerThumb;
+   final int colorPickerThumbStroke;
+   final int hueSliderMarker;
+   final int hueSliderMarkerStroke;
+   final int runnerBackground;
+   final int runnerEmptyBackground;
    final List<SyntaxRule> syntaxRules;
 
    private EditorTheme(Builder builder) {
@@ -37,6 +56,7 @@ public final class EditorTheme {
       surface = builder.surface;
       surfaceSoft = builder.surfaceSoft;
       border = builder.border;
+      scrim = builder.scrim;
       text = builder.text;
       textMuted = builder.textMuted;
       accent = builder.accent;
@@ -55,34 +75,180 @@ public final class EditorTheme {
       string = builder.string;
       comment = builder.comment;
       operator = builder.operator;
+      colorPickerBorder = builder.colorPickerBorder;
+      colorPickerThumb = builder.colorPickerThumb;
+      colorPickerThumbStroke = builder.colorPickerThumbStroke;
+      hueSliderMarker = builder.hueSliderMarker;
+      hueSliderMarkerStroke = builder.hueSliderMarkerStroke;
+      runnerBackground = builder.runnerBackground;
+      runnerEmptyBackground = builder.runnerEmptyBackground;
       syntaxRules = Collections.unmodifiableList(buildSyntaxRules());
    }
 
-   static EditorTheme dark() {
+   static EditorTheme load(Context context, String themeId) {
+      try {
+         JSONObject root = new JSONObject(readAsset(context));
+         return fromJson(findTheme(root, themeId));
+      } catch (IOException | JSONException | IllegalArgumentException exception) {
+         throw new IllegalStateException("Unable to load editor theme colors", exception);
+      }
+   }
+
+   static List<ThemeInfo> listThemes(Context context) {
+      try {
+         JSONObject root = new JSONObject(readAsset(context));
+         JSONArray themes = root.getJSONArray("themes");
+         List<ThemeInfo> result = new ArrayList<>();
+         for (int i = 0; i < themes.length(); i++) {
+            JSONObject theme = themes.getJSONObject(i);
+            String id = theme.getString("id");
+            result.add(new ThemeInfo(id, theme.optString("name", id)));
+         }
+         return Collections.unmodifiableList(result);
+      } catch (IOException | JSONException exception) {
+         throw new IllegalStateException("Unable to load editor theme list", exception);
+      }
+   }
+
+   static String resolveThemeId(Context context, String themeId) {
+      try {
+         JSONObject root = new JSONObject(readAsset(context));
+         return findTheme(root, themeId).getString("id");
+      } catch (IOException | JSONException exception) {
+         throw new IllegalStateException("Unable to resolve editor theme", exception);
+      }
+   }
+
+   static EditorTheme interpolate(EditorTheme from, EditorTheme to, float fraction) {
+      float safeFraction = Math.max(0f, Math.min(1f, fraction));
       return new Builder()
-         .background(Color.rgb(13, 17, 23))
-         .surface(Color.rgb(22, 27, 34))
-         .surfaceSoft(Color.rgb(13, 17, 23))
-         .border(Color.rgb(48, 54, 61))
-         .text(Color.rgb(201, 209, 217))
-         .textMuted(Color.rgb(139, 148, 158))
-         .accent(Color.rgb(63, 185, 80))
-         .codeAccent(Color.rgb(88, 166, 255))
-         .play(Color.rgb(63, 185, 80))
-         .stop(Color.rgb(248, 81, 73))
-         .error(Color.rgb(248, 81, 73))
-         .selection(Color.rgb(56, 139, 253))
-         .currentLine(Color.rgb(22, 27, 34))
-         .keyword(Color.rgb(210, 168, 255))
-         .type(Color.rgb(210, 168, 255))
-         .processing(Color.rgb(88, 166, 255))
-         .runtimeValue(Color.rgb(121, 192, 255))
-         .constant(Color.rgb(255, 123, 114))
-         .number(Color.rgb(255, 166, 87))
-         .string(Color.rgb(126, 231, 135))
-         .comment(Color.rgb(139, 148, 158))
-         .operator(Color.rgb(121, 192, 255))
+         .background(interpolateColor(from.background, to.background, safeFraction))
+         .surface(interpolateColor(from.surface, to.surface, safeFraction))
+         .surfaceSoft(interpolateColor(from.surfaceSoft, to.surfaceSoft, safeFraction))
+         .border(interpolateColor(from.border, to.border, safeFraction))
+         .scrim(interpolateColor(from.scrim, to.scrim, safeFraction))
+         .text(interpolateColor(from.text, to.text, safeFraction))
+         .textMuted(interpolateColor(from.textMuted, to.textMuted, safeFraction))
+         .accent(interpolateColor(from.accent, to.accent, safeFraction))
+         .codeAccent(interpolateColor(from.codeAccent, to.codeAccent, safeFraction))
+         .error(interpolateColor(from.error, to.error, safeFraction))
+         .play(interpolateColor(from.play, to.play, safeFraction))
+         .stop(interpolateColor(from.stop, to.stop, safeFraction))
+         .selection(interpolateColor(from.selection, to.selection, safeFraction))
+         .currentLine(interpolateColor(from.currentLine, to.currentLine, safeFraction))
+         .colorPickerBorder(interpolateColor(from.colorPickerBorder, to.colorPickerBorder, safeFraction))
+         .colorPickerThumb(interpolateColor(from.colorPickerThumb, to.colorPickerThumb, safeFraction))
+         .colorPickerThumbStroke(interpolateColor(from.colorPickerThumbStroke, to.colorPickerThumbStroke, safeFraction))
+         .hueSliderMarker(interpolateColor(from.hueSliderMarker, to.hueSliderMarker, safeFraction))
+         .hueSliderMarkerStroke(interpolateColor(from.hueSliderMarkerStroke, to.hueSliderMarkerStroke, safeFraction))
+         .runnerBackground(interpolateColor(from.runnerBackground, to.runnerBackground, safeFraction))
+         .runnerEmptyBackground(interpolateColor(from.runnerEmptyBackground, to.runnerEmptyBackground, safeFraction))
+         .keyword(interpolateColor(from.keyword, to.keyword, safeFraction))
+         .type(interpolateColor(from.type, to.type, safeFraction))
+         .processing(interpolateColor(from.processing, to.processing, safeFraction))
+         .runtimeValue(interpolateColor(from.runtimeValue, to.runtimeValue, safeFraction))
+         .constant(interpolateColor(from.constant, to.constant, safeFraction))
+         .number(interpolateColor(from.number, to.number, safeFraction))
+         .string(interpolateColor(from.string, to.string, safeFraction))
+         .comment(interpolateColor(from.comment, to.comment, safeFraction))
+         .operator(interpolateColor(from.operator, to.operator, safeFraction))
          .build();
+   }
+
+   private static int interpolateColor(int from, int to, float fraction) {
+      int a = Math.round(Color.alpha(from) + (Color.alpha(to) - Color.alpha(from)) * fraction);
+      int r = Math.round(Color.red(from) + (Color.red(to) - Color.red(from)) * fraction);
+      int g = Math.round(Color.green(from) + (Color.green(to) - Color.green(from)) * fraction);
+      int b = Math.round(Color.blue(from) + (Color.blue(to) - Color.blue(from)) * fraction);
+      return Color.argb(a, r, g, b);
+   }
+
+   private static String readAsset(Context context) throws IOException {
+      try (InputStream input = context.getAssets().open(THEMES_ASSET);
+           ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+         byte[] buffer = new byte[4096];
+         int count;
+         while ((count = input.read(buffer)) != -1) {
+            output.write(buffer, 0, count);
+         }
+         return new String(output.toByteArray(), StandardCharsets.UTF_8);
+      }
+   }
+
+   private static JSONObject findTheme(JSONObject root, String themeId) throws JSONException {
+      String requestedId = themeId == null ? "" : themeId.trim();
+      String defaultId = root.optString("defaultTheme", "");
+      JSONArray themes = root.getJSONArray("themes");
+      JSONObject firstTheme = null;
+      JSONObject defaultTheme = null;
+
+      for (int i = 0; i < themes.length(); i++) {
+         JSONObject theme = themes.getJSONObject(i);
+         String id = theme.getString("id");
+         if (firstTheme == null) {
+            firstTheme = theme;
+         }
+         if (id.equals(requestedId)) {
+            return theme;
+         }
+         if (id.equals(defaultId)) {
+            defaultTheme = theme;
+         }
+      }
+
+      if (defaultTheme != null) {
+         return defaultTheme;
+      }
+      if (firstTheme != null) {
+         return firstTheme;
+      }
+      throw new JSONException("Theme list is empty");
+   }
+
+   private static EditorTheme fromJson(JSONObject theme) throws JSONException {
+      JSONObject colors = theme.getJSONObject("colors");
+      JSONObject ui = colors.getJSONObject("ui");
+      JSONObject actions = colors.getJSONObject("actions");
+      JSONObject editor = colors.getJSONObject("editor");
+      JSONObject widgets = colors.getJSONObject("widgets");
+      JSONObject syntax = colors.getJSONObject("syntax");
+
+      return new Builder()
+         .background(color(ui, "background"))
+         .surface(color(ui, "surface"))
+         .surfaceSoft(color(ui, "surfaceSoft"))
+         .border(color(ui, "border"))
+         .scrim(color(ui, "scrim"))
+         .text(color(ui, "text"))
+         .textMuted(color(ui, "textMuted"))
+         .accent(color(ui, "accent"))
+         .codeAccent(color(ui, "codeAccent"))
+         .error(color(ui, "error"))
+         .play(color(actions, "play"))
+         .stop(color(actions, "stop"))
+         .selection(color(editor, "selection"))
+         .currentLine(color(editor, "currentLine"))
+         .colorPickerBorder(color(widgets, "colorPickerBorder"))
+         .colorPickerThumb(color(widgets, "colorPickerThumb"))
+         .colorPickerThumbStroke(color(widgets, "colorPickerThumbStroke"))
+         .hueSliderMarker(color(widgets, "hueSliderMarker"))
+         .hueSliderMarkerStroke(color(widgets, "hueSliderMarkerStroke"))
+         .runnerBackground(color(widgets, "runnerBackground"))
+         .runnerEmptyBackground(color(widgets, "runnerEmptyBackground"))
+         .keyword(color(syntax, "keyword"))
+         .type(color(syntax, "type"))
+         .processing(color(syntax, "processing"))
+         .runtimeValue(color(syntax, "runtimeValue"))
+         .constant(color(syntax, "constant"))
+         .number(color(syntax, "number"))
+         .string(color(syntax, "string"))
+         .comment(color(syntax, "comment"))
+         .operator(color(syntax, "operator"))
+         .build();
+   }
+
+   private static int color(JSONObject section, String key) throws JSONException {
+      return Color.parseColor(section.getString(key));
    }
 
    private List<SyntaxRule> buildSyntaxRules() {
@@ -146,9 +312,11 @@ public final class EditorTheme {
       rules.add(new SyntaxRule(functionCallPattern(
          "if", "else", "for", "while", "switch", "case", "catch", "return", "new", "throw", "do", "try", "synchronized"
       ), processing));
+      rules.add(new SyntaxRule("(?<![\\w$])#[0-9A-Fa-f]{6}(?![0-9A-Fa-f\\w$])", number));
       rules.add(new SyntaxRule("\\b\\d+(\\.\\d+)?\\b", number));
       rules.add(new SyntaxRule("\"([^\"\\\\]|\\\\.)*\"", string));
       rules.add(new SyntaxRule("[-+*/%=!<>|&^~?:]+", operator));
+      rules.add(new SyntaxRule("/\\*.*?(?:\\*/|\\z)", comment, Pattern.DOTALL));
       rules.add(new SyntaxRule("//.*$", comment, Pattern.MULTILINE));
       return rules;
    }
@@ -190,11 +358,22 @@ public final class EditorTheme {
       }
    }
 
+   static final class ThemeInfo {
+      final String id;
+      final String name;
+
+      ThemeInfo(String id, String name) {
+         this.id = id;
+         this.name = name;
+      }
+   }
+
    private static final class Builder {
       private int background;
       private int surface;
       private int surfaceSoft;
       private int border;
+      private int scrim;
       private int text;
       private int textMuted;
       private int accent;
@@ -213,6 +392,13 @@ public final class EditorTheme {
       private int string;
       private int comment;
       private int operator;
+      private int colorPickerBorder;
+      private int colorPickerThumb;
+      private int colorPickerThumbStroke;
+      private int hueSliderMarker;
+      private int hueSliderMarkerStroke;
+      private int runnerBackground;
+      private int runnerEmptyBackground;
 
       Builder background(int value) {
          background = value;
@@ -231,6 +417,11 @@ public final class EditorTheme {
 
       Builder border(int value) {
          border = value;
+         return this;
+      }
+
+      Builder scrim(int value) {
+         scrim = value;
          return this;
       }
 
@@ -321,6 +512,41 @@ public final class EditorTheme {
 
       Builder operator(int value) {
          operator = value;
+         return this;
+      }
+
+      Builder colorPickerBorder(int value) {
+         colorPickerBorder = value;
+         return this;
+      }
+
+      Builder colorPickerThumb(int value) {
+         colorPickerThumb = value;
+         return this;
+      }
+
+      Builder colorPickerThumbStroke(int value) {
+         colorPickerThumbStroke = value;
+         return this;
+      }
+
+      Builder hueSliderMarker(int value) {
+         hueSliderMarker = value;
+         return this;
+      }
+
+      Builder hueSliderMarkerStroke(int value) {
+         hueSliderMarkerStroke = value;
+         return this;
+      }
+
+      Builder runnerBackground(int value) {
+         runnerBackground = value;
+         return this;
+      }
+
+      Builder runnerEmptyBackground(int value) {
+         runnerEmptyBackground = value;
          return this;
       }
 

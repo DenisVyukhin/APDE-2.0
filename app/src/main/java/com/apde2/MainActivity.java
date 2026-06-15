@@ -1,14 +1,19 @@
 package com.apde2;
 
+import android.animation.ValueAnimator;
 import android.app.Dialog;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Build;
@@ -29,18 +34,30 @@ import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewTreeObserver;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.activity.ComponentActivity;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsAnimationCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.documentfile.provider.DocumentFile;
+
+import com.apde2.preview.PreviewBuildStatus;
+import com.apde2.preview.PreviewDiagnostic;
+import com.apde2.preview.SketchPreviewController;
 
 import android.webkit.MimeTypeMap;
 
@@ -63,20 +80,79 @@ public final class MainActivity extends ComponentActivity {
    private static final int LOG_INFO = 1;
    private static final int LOG_SUCCESS = 2;
    private static final int LOG_ERROR = 3;
+   private static final int LOG_CONSOLE = 4;
+   private static final String PREVIEW_LOG_ACTION = "com.apde2.preview.LOG";
+   private static final String PREVIEW_CRASH_ACTION = "com.apde2.preview.CRASH";
+   private static final String PREVIEW_EXTRA_MESSAGE = "com.apde2.preview.extra.MESSAGE";
+   private static final String PREVIEW_EXTRA_STACKTRACE = "com.apde2.preview.extra.STACKTRACE";
+   private static final String PREVIEW_EXTRA_CHANNEL = "com.apde2.preview.extra.CHANNEL";
+   private static final String SECTION_SKETCHES = "apde:sketches";
+   private static final String SECTION_EXAMPLES = "apde:examples";
+   private static final String SECTION_LIBRARY_EXAMPLES = "apde:library_examples";
+   private static final String SECTION_RECENT = "apde:recent";
+   private static final String SKETCHBOOK_DIR_NAME = "Sketchbook";
+   private static final String SKETCHES_DIR_NAME = "Sketches";
+   private static final String EXAMPLES_DIR_NAME = "Examples";
+   private static final String LIBRARY_EXAMPLES_DIR_NAME = "Library Examples";
+   private static final String RECENT_DIR_NAME = "Recent";
+   private static final long PREVIEW_LOG_FLUSH_DELAY_MS = 120L;
+   private static final int MAX_CONSOLE_ENTRIES = 1200;
 
    private final Handler runHandler = new Handler(Looper.getMainLooper());
    private final List<SketchFile> files = new ArrayList<>();
    private final List<ConsoleEntry> consoleEntries = new ArrayList<>();
+   private final List<String> pendingPreviewConsoleOutput = new ArrayList<>();
    private final List<Runnable> pendingRunSteps = new ArrayList<>();
-   private final EditorTheme theme = EditorTheme.dark();
+   private final Runnable flushPreviewConsoleRunnable = this::flushPreviewConsoleEntries;
+   private EditorTheme theme;
+   private ValueAnimator themeAnimator;
+   private boolean previewConsoleFlushScheduled = false;
+   private ConsoleEntry openPreviewConsoleEntry;
+   private final BroadcastReceiver previewReceiver = new BroadcastReceiver() {
+      @Override
+      public void onReceive(Context context, Intent intent) {
+         if (intent == null || intent.getAction() == null) {
+            return;
+         }
+         String message = intent.getStringExtra(PREVIEW_EXTRA_MESSAGE);
+         if (message == null || message.trim().isEmpty()) {
+            message = intent.getAction();
+         }
+         if (PREVIEW_CRASH_ACTION.equals(intent.getAction())) {
+            flushPreviewConsoleEntries();
+            runInProgress = false;
+            previewActivityLaunched = false;
+            updateRunButton();
+            addConsoleEntry(LOG_ERROR, message);
+            String stacktrace = intent.getStringExtra(PREVIEW_EXTRA_STACKTRACE);
+            if (stacktrace != null && !stacktrace.trim().isEmpty()) {
+               addConsoleEntry(LOG_ERROR, stacktrace.trim());
+            }
+            expandConsoleForError();
+         } else if (PREVIEW_LOG_ACTION.equals(intent.getAction())) {
+            String channel = intent.getStringExtra(PREVIEW_EXTRA_CHANNEL);
+            if ("stdout".equals(channel) || "stderr".equals(channel)) {
+               queuePreviewConsoleOutput(message);
+            } else if (message.startsWith("[stdout] ")) {
+               queuePreviewConsoleOutput(message.substring(9) + "\n");
+            } else if (message.startsWith("[stderr] ")) {
+               queuePreviewConsoleOutput(message.substring(9) + "\n");
+            }
+         }
+      }
+   };
 
    private SketchStore store;
    private AppSettings settings;
    private AppStrings strings;
+   private SketchPreviewController previewController;
    private String appliedLanguage;
+   private String appliedThemeMode;
    private FrameLayout rootContainer;
    private LinearLayout rootView;
+   private View navigationBarBackground;
    private LinearLayout tabsBar;
+   private FrameLayout editorWorkspace;
    private LinearLayout editorPanel;
    private CodeEditorView editor;
    private TextView editorEmptyState;
@@ -85,6 +161,7 @@ public final class MainActivity extends ComponentActivity {
    private LinearLayout tabs;
    private LinearLayout consolePanel;
    private LinearLayout consoleHeader;
+   private View consoleHandle;
    private ScrollView consoleScroll;
    private LinearLayout consoleContent;
    private TextView consoleTab;
@@ -102,15 +179,25 @@ public final class MainActivity extends ComponentActivity {
    private int consoleHeight;
    private int expandedConsoleHeight;
    private int consoleStartHeight;
+   private int pendingConsoleHeight;
    private float consoleStartY;
    private boolean consoleCollapsed = false;
    private boolean userResizingConsole = false;
-   private boolean keyboardVisible = false;
-   private int keyboardInsetHeight = 0;
-   private int keyboardVisibleBottom = 0;
-   private boolean restoreConsoleAfterKeyboard = false;
-   private int consoleHeightBeforeKeyboard = 0;
+   private boolean consoleHeightApplyScheduled = false;
+   private final Runnable applyPendingConsoleHeightRunnable = this::applyPendingConsoleHeight;
+   private boolean previewActivityLaunched = false;
+   private int imeInset = 0;
+   private int systemTopInset = 0;
+   private int systemBottomInset = 0;
+   private boolean imeAnimating = false;
+   private boolean imeShown = false;
+   private boolean imeTransitionAppearing = false;
+   private int consoleHeightBeforeIme = 0;
+   private boolean consoleCollapsedByIme = false;
+   private int consoleImeRestoreStartInset = 0;
+   private int consoleImeRestoreHeightDelta = 0;
    private boolean loadingTab = false;
+   private boolean editorLoadedFile = false;
    private boolean runInProgress = false;
    private float filePanelStartX;
    private float filePanelStartY;
@@ -123,9 +210,13 @@ public final class MainActivity extends ComponentActivity {
       super.onCreate(savedInstanceState);
       store = new SketchStore(this);
       settings = new AppSettings(this);
+      appliedThemeMode = settings.themeMode();
+      theme = EditorTheme.load(this, appliedThemeMode);
+      previewController = new SketchPreviewController(this);
       appliedLanguage = settings.language();
       strings = new AppStrings(appliedLanguage);
       applySystemBarColors();
+      registerPreviewReceiver();
       files.addAll(store.loadFiles());
       activeIndex = files.isEmpty() ? -1 : Math.min(store.loadActiveIndex(), files.size() - 1);
       buildUi();
@@ -136,22 +227,41 @@ public final class MainActivity extends ComponentActivity {
          openTab(Math.max(0, activeIndex));
       }
       addConsoleEntry(LOG_INFO, s(AppStrings.Key.EDITOR_READY));
+      openExternalPdeIntent(getIntent());
    }
 
    @Override
    protected void onPause() {
       super.onPause();
-      persistCurrentFile();
-      store.save(files, activeIndex);
+      flushAutosave();
+   }
+
+   @Override
+   protected void onStop() {
+      flushAutosave();
+      super.onStop();
    }
 
    @Override
    protected void onResume() {
       super.onResume();
+      flushAutosave();
+      if (previewActivityLaunched && runInProgress) {
+         previewActivityLaunched = false;
+         runInProgress = false;
+         updateRunButton();
+      }
       store.refreshStorageState();
       String language = settings.language();
       if (!language.equals(appliedLanguage)) {
+         flushAutosave();
          recreate();
+         return;
+      }
+      String themeMode = settings.themeMode();
+      if (!themeMode.equals(appliedThemeMode)) {
+         flushAutosave();
+         animateThemeChange(themeMode);
          return;
       }
       applySettings();
@@ -160,8 +270,48 @@ public final class MainActivity extends ComponentActivity {
 
    @Override
    protected void onDestroy() {
+      flushAutosave();
+      resetConsoleImeOffset();
+      cancelThemeAnimation();
       cancelPendingRunSteps();
+      runHandler.removeCallbacks(flushPreviewConsoleRunnable);
+      previewConsoleFlushScheduled = false;
+      unregisterPreviewReceiver();
+      if (previewController != null) {
+         previewController.close();
+      }
       super.onDestroy();
+   }
+
+   @Override
+   protected void onSaveInstanceState(Bundle outState) {
+      flushAutosave();
+      super.onSaveInstanceState(outState);
+   }
+
+   @Override
+   protected void onNewIntent(Intent intent) {
+      super.onNewIntent(intent);
+      setIntent(intent);
+      openExternalPdeIntent(intent);
+   }
+
+   private void registerPreviewReceiver() {
+      IntentFilter filter = new IntentFilter();
+      filter.addAction(PREVIEW_LOG_ACTION);
+      filter.addAction(PREVIEW_CRASH_ACTION);
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+         registerReceiver(previewReceiver, filter, Context.RECEIVER_EXPORTED);
+      } else {
+         registerReceiver(previewReceiver, filter);
+      }
+   }
+
+   private void unregisterPreviewReceiver() {
+      try {
+         unregisterReceiver(previewReceiver);
+      } catch (IllegalArgumentException ignored) {
+      }
    }
 
    @Override
@@ -208,6 +358,8 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void buildUi() {
+      WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+
       FrameLayout container = new FrameLayout(this);
       rootContainer = container;
 
@@ -216,20 +368,10 @@ public final class MainActivity extends ComponentActivity {
       root.setOrientation(LinearLayout.VERTICAL);
       root.setBackgroundColor(theme.background);
       root.setPadding(0, 0, 0, 0);
-      root.setOnApplyWindowInsetsListener((view, insets) -> {
-         view.setPadding(0, insets.getSystemWindowInsetTop() + dp(12), 0, 0);
-         return insets;
-      });
 
       root.addView(createTopBar(), sectionParams(dp(68)));
       root.addView(createTabsBar(), sectionParams(dp(54)));
-      root.addView(createEditorPanel(), editorSectionParams());
-
-      consoleHeight = dp(220);
-      consolePanel = createConsolePanel();
-      LinearLayout.LayoutParams consoleParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, consoleHeight);
-      consoleParams.setMargins(0, 0, 0, 0);
-      root.addView(consolePanel, consoleParams);
+      root.addView(createEditorWorkspace(), editorSectionParams());
 
       root.post(() -> {
          int targetHeight = Math.round(root.getHeight() * 0.32f);
@@ -242,13 +384,128 @@ public final class MainActivity extends ComponentActivity {
       });
 
       container.addView(root, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+      navigationBarBackground = new View(this);
+      navigationBarBackground.setBackgroundColor(theme.surface);
+      FrameLayout.LayoutParams navBackgroundParams = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, 0, Gravity.BOTTOM);
+      container.addView(navigationBarBackground, navBackgroundParams);
       container.addView(createFilePanelOverlay(), new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
       setContentView(container);
-      container.requestApplyInsets();
-      root.requestApplyInsets();
-      installKeyboardWatcher(root);
+      installInsetsHandler(root);
       rebuildTabs();
+   }
+
+   private void installInsetsHandler(View root) {
+      ViewCompat.setOnApplyWindowInsetsListener(root, (view, insets) -> {
+         Insets sys = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+         Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
+         systemTopInset = sys.top;
+         systemBottomInset = sys.bottom;
+         if (!imeAnimating) {
+            int newImeInset = Math.max(0, ime.bottom - sys.bottom);
+            boolean willBeShown = newImeInset > 0;
+            if (willBeShown != imeShown) {
+               if (editor != null) {
+                  editor.setExternalResize(true);
+               }
+               handleImeTransition(willBeShown, newImeInset);
+               if (editor != null) {
+                  editor.setExternalResize(false);
+                  if (willBeShown) {
+                     editor.revealSelectionAfterOverlaySettles();
+                  }
+               }
+            }
+            imeInset = newImeInset;
+            applyContentPadding();
+         }
+         return insets;
+      });
+
+      ViewCompat.setWindowInsetsAnimationCallback(root, new WindowInsetsAnimationCompat.Callback(WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_STOP) {
+         @Override
+         public void onPrepare(WindowInsetsAnimationCompat animation) {
+            if ((animation.getTypeMask() & WindowInsetsCompat.Type.ime()) != 0) {
+               imeAnimating = true;
+               if (editor != null) {
+                  editor.setExternalResize(true);
+               }
+            }
+         }
+
+         @Override
+         public WindowInsetsAnimationCompat.BoundsCompat onStart(WindowInsetsAnimationCompat animation, WindowInsetsAnimationCompat.BoundsCompat bounds) {
+            if ((animation.getTypeMask() & WindowInsetsCompat.Type.ime()) != 0) {
+               WindowInsetsCompat current = ViewCompat.getRootWindowInsets(root);
+               boolean appearing = current != null && current.isVisible(WindowInsetsCompat.Type.ime());
+               beginImeTransition(appearing);
+            }
+            return bounds;
+         }
+
+         @Override
+         public WindowInsetsCompat onProgress(WindowInsetsCompat insets, java.util.List<WindowInsetsAnimationCompat> running) {
+            Insets sys = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
+            systemTopInset = sys.top;
+            systemBottomInset = sys.bottom;
+            imeInset = Math.max(0, ime.bottom - sys.bottom);
+            applyContentPadding();
+            updateNavigationBarBackground();
+            return insets;
+         }
+
+         @Override
+         public void onEnd(WindowInsetsAnimationCompat animation) {
+            if ((animation.getTypeMask() & WindowInsetsCompat.Type.ime()) != 0) {
+               imeAnimating = false;
+               finishImeTransition();
+               if (editor != null) {
+                  editor.setExternalResize(false);
+                  if (imeTransitionAppearing) {
+                     editor.revealSelectionAfterOverlaySettles();
+                  }
+               }
+            }
+         }
+      });
+
+      root.requestApplyInsets();
+   }
+
+   private void applyContentPadding() {
+      if (rootView == null) return;
+      int top = systemTopInset + dp(12);
+      int bottom = systemBottomInset;
+      if (rootView.getPaddingTop() != top || rootView.getPaddingBottom() != bottom) {
+         rootView.setPadding(0, top, 0, bottom);
+      }
+      applyImeOverlayOffset();
+      updateNavigationBarBackground();
+   }
+
+   private void applyImeOverlayOffset() {
+      if (consolePanel != null) {
+         consolePanel.setTranslationY(-imeInset + consoleImeRestoreOffset());
+      }
+      updateEditorViewportForConsole();
+   }
+
+   private float consoleImeRestoreOffset() {
+      if (imeTransitionAppearing || consoleImeRestoreStartInset <= 0 || consoleImeRestoreHeightDelta == 0) {
+         return 0f;
+      }
+      float insetFraction = Math.min(1f, Math.max(0f, (float) imeInset / consoleImeRestoreStartInset));
+      return consoleImeRestoreHeightDelta * insetFraction;
+   }
+
+   private void updateNavigationBarBackground() {
+      if (navigationBarBackground == null) return;
+      FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) navigationBarBackground.getLayoutParams();
+      if (params.height != systemBottomInset) {
+         params.height = systemBottomInset;
+         navigationBarBackground.setLayoutParams(params);
+      }
    }
 
    private LinearLayout createTopBar() {
@@ -340,7 +597,7 @@ public final class MainActivity extends ComponentActivity {
       editorPanel = new LinearLayout(this);
       editorPanel.setOrientation(LinearLayout.HORIZONTAL);
       editorPanel.setPadding(dp(2), dp(10), 0, 0);
-      UiStyles.topRounded(editorPanel, theme.surfaceSoft, dp(14));
+      UiStyles.topRounded(editorPanel, theme.background, dp(14));
 
       lineNumbers = new LineNumberView(this, theme);
       editorPanel.addView(lineNumbers, new LinearLayout.LayoutParams(lineNumbers.desiredWidth(), LinearLayout.LayoutParams.MATCH_PARENT));
@@ -367,7 +624,7 @@ public final class MainActivity extends ComponentActivity {
             updateLineNumbers();
             if (!loadingTab && activeIndex >= 0 && activeIndex < files.size()) {
                files.get(activeIndex).code = editable.toString();
-               store.save(files, activeIndex);
+               persistCurrentFile();
             }
          }
       });
@@ -387,11 +644,30 @@ public final class MainActivity extends ComponentActivity {
       return editorPanel;
    }
 
+   private FrameLayout createEditorWorkspace() {
+      editorWorkspace = new FrameLayout(this);
+      editorWorkspace.addView(createEditorPanel(), new FrameLayout.LayoutParams(
+         FrameLayout.LayoutParams.MATCH_PARENT,
+         FrameLayout.LayoutParams.MATCH_PARENT
+      ));
+
+      consoleHeight = dp(220);
+      consolePanel = createConsolePanel();
+      FrameLayout.LayoutParams consoleParams = new FrameLayout.LayoutParams(
+         FrameLayout.LayoutParams.MATCH_PARENT,
+         consoleHeight,
+         Gravity.BOTTOM
+      );
+      editorWorkspace.addView(consolePanel, consoleParams);
+      updateEditorViewportForConsole();
+      return editorWorkspace;
+   }
+
    private LinearLayout createConsolePanel() {
       LinearLayout panel = new LinearLayout(this);
       panel.setOrientation(LinearLayout.VERTICAL);
       panel.setPadding(dp(12), dp(8), dp(12), dp(10));
-      UiStyles.topRoundedStroke(panel, theme.surface, theme.border, dp(1), dp(14));
+      UiStyles.topRoundedSideStroke(panel, theme.surface, theme.border, dp(1), dp(14));
       panel.setOnTouchListener((view, event) -> resizeConsoleFromTopEdge(event));
 
       LinearLayout dragArea = new LinearLayout(this);
@@ -400,6 +676,7 @@ public final class MainActivity extends ComponentActivity {
       dragArea.setOnTouchListener((view, event) -> resizeConsole(view, event));
 
       View handle = new View(this);
+      consoleHandle = handle;
       UiStyles.rounded(handle, theme.border, dp(3));
       LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(dp(54), dp(5));
       handleParams.gravity = Gravity.CENTER_HORIZONTAL;
@@ -436,11 +713,6 @@ public final class MainActivity extends ComponentActivity {
       consoleScroll = new ScrollView(this);
       consoleScroll.setFillViewport(true);
       consoleScroll.setVerticalScrollBarEnabled(true);
-      consoleScroll.setClipToPadding(false);
-      consoleScroll.setOnApplyWindowInsetsListener((view, insets) -> {
-         view.setPadding(0, 0, 0, insets.getSystemWindowInsetBottom() + dp(14));
-         return insets;
-      });
       LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
       scrollParams.setMargins(0, dp(8), 0, 0);
       consoleContent = new LinearLayout(this);
@@ -474,23 +746,98 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void runSketch() {
-      persistCurrentFile();
-      store.save(files, activeIndex);
+      if (editor != null) {
+         editor.clearFocus();
+      }
+      hideKeyboard();
+      flushAutosave();
+      runHandler.removeCallbacks(flushPreviewConsoleRunnable);
+      previewConsoleFlushScheduled = false;
+      pendingPreviewConsoleOutput.clear();
+      openPreviewConsoleEntry = null;
+      consoleEntries.clear();
+      openConsoleForRun();
+      File projectDir = store.currentProjectDir();
+      if (projectDir == null) {
+         addConsoleEntry(LOG_ERROR, "Could not read sketch project.");
+         expandConsoleForError();
+         return;
+      }
       runInProgress = true;
       updateRunButton();
-      addConsoleEntry(LOG_INFO, sf(AppStrings.Key.SAVED_SKETCH_TO, store.sketchDir().getAbsolutePath()));
-      addConsoleEntry(LOG_INFO, s(AppStrings.Key.STARTING_SKETCH_RUN));
-      scheduleRunStep(420, () -> addConsoleEntry(LOG_INFO, s(AppStrings.Key.PREPARING_PROJECT_SNAPSHOT)));
-      scheduleRunStep(900, () -> addConsoleEntry(LOG_INFO, s(AppStrings.Key.LOADING_1)));
-      scheduleRunStep(1250, () -> addConsoleEntry(LOG_INFO, s(AppStrings.Key.LOADING_2)));
-      scheduleRunStep(1600, () -> addConsoleEntry(LOG_INFO, s(AppStrings.Key.LOADING_3)));
-      scheduleRunStep(2050, () -> addConsoleEntry(LOG_INFO, s(AppStrings.Key.COMPILER_AVAILABLE_NOT_CONNECTED)));
-      scheduleRunStep(2500, () -> addConsoleEntry(LOG_SUCCESS, s(AppStrings.Key.SKETCH_STARTED)));
+      addConsoleEntry(LOG_INFO, "Initializing Sketch Preview...");
+      if (previewController == null) {
+         previewController = new SketchPreviewController(this);
+      }
+      final boolean[] compilingReported = { false };
+      final boolean[] launchingReported = { false };
+      final List<PreviewDiagnostic> buildDiagnostics = new ArrayList<>();
+      previewController.run(projectDir, projectName(), new SketchPreviewController.Callback() {
+         @Override
+         public void onProgress(PreviewBuildStatus status) {
+            switch (status.getPhase()) {
+               case COMPILING:
+                  if (!compilingReported[0]) {
+                     compilingReported[0] = true;
+                     addConsoleEntry(LOG_INFO, "Compiling sketch...");
+                  }
+                  break;
+               case LAUNCHING:
+                  if (!launchingReported[0]) {
+                     launchingReported[0] = true;
+                     addConsoleEntry(LOG_INFO, "Launching sketch...");
+                  }
+                  break;
+               default:
+                  break;
+            }
+         }
+
+         @Override
+         public void onDiagnostic(PreviewDiagnostic diagnostic) {
+            buildDiagnostics.add(diagnostic);
+         }
+
+         @Override
+         public void onSuccess() {
+            runInProgress = true;
+            previewActivityLaunched = true;
+            updateRunButton();
+            addConsoleEntry(LOG_SUCCESS, "Sketch started");
+         }
+
+         @Override
+         public void onFailure(String message) {
+            runInProgress = false;
+            previewActivityLaunched = false;
+            updateRunButton();
+            if (buildDiagnostics.isEmpty()) {
+               addConsoleEntry(LOG_ERROR, message);
+            } else {
+               for (PreviewDiagnostic diagnostic : buildDiagnostics) {
+                  consoleEntries.add(new ConsoleEntry(LOG_ERROR, diagnostic.toString()));
+               }
+               trimConsoleEntries();
+            }
+            expandConsoleForError();
+         }
+
+         @Override
+         public void onStopped() {
+            runInProgress = false;
+            previewActivityLaunched = false;
+            updateRunButton();
+         }
+      });
    }
 
    private void stopSketchRun() {
       cancelPendingRunSteps();
+      if (previewController != null) {
+         previewController.stop();
+      }
       runInProgress = false;
+      previewActivityLaunched = false;
       updateRunButton();
       addConsoleEntry(LOG_INFO, s(AppStrings.Key.SKETCH_STOPPED));
    }
@@ -521,7 +868,7 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void addTab() {
-      persistCurrentFile();
+      flushAutosave();
       showAddFileDialog();
    }
 
@@ -529,7 +876,9 @@ public final class MainActivity extends ComponentActivity {
       int nextNumber = files.size() + 1;
       String name = normalizeFileName(requestedName, "Tab" + nextNumber + ".pde");
       File currentProjectDir = store.currentProjectDir();
-      files.add(new SketchFile(name, "", null, currentProjectDir == null ? null : currentProjectDir.getAbsolutePath()));
+      files.add(new SketchFile(name, "", null,
+         currentProjectDir == null ? null : currentProjectDir.getAbsolutePath(),
+         currentProjectDir == null ? null : new File(currentProjectDir, name).getAbsolutePath()));
       addConsoleEntry(LOG_INFO, sf(AppStrings.Key.CREATED_FILE, name));
       openTab(files.size() - 1);
       store.save(files, activeIndex);
@@ -546,7 +895,7 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private String normalizeFileName(String requestedName, String fallback) {
-      String name = requestedName == null ? "" : requestedName.trim();
+      String name = requestedName == null ? "" : requestedName.replace("/", "").replace("\\", "").trim();
       if (name.isEmpty()) {
          name = fallback;
       }
@@ -579,7 +928,14 @@ public final class MainActivity extends ComponentActivity {
    private void removeTab() {
       if (files.size() <= 1) {
          if (!files.isEmpty()) {
-            String removedName = files.get(activeIndex).name;
+            SketchFile removedFile = files.get(activeIndex);
+            String removedName = removedFile.name;
+            if (removedFile.documentUri == null && !store.deleteSketchFile(removedFile)) {
+               addConsoleEntry(LOG_ERROR, sf(AppStrings.Key.COULD_NOT_DELETE, removedName));
+               activeConsoleTab = LOG_ERROR;
+               renderConsole();
+               return;
+            }
             files.clear();
             activeIndex = -1;
             syncEditorState();
@@ -590,27 +946,48 @@ public final class MainActivity extends ComponentActivity {
          }
          return;
       }
-      String removedName = files.get(activeIndex).name;
+      SketchFile removedFile = files.get(activeIndex);
+      String removedName = removedFile.name;
+      if (removedFile.documentUri == null && !store.deleteSketchFile(removedFile)) {
+         addConsoleEntry(LOG_ERROR, sf(AppStrings.Key.COULD_NOT_DELETE, removedName));
+         activeConsoleTab = LOG_ERROR;
+         renderConsole();
+         return;
+      }
       files.remove(activeIndex);
       activeIndex = Math.max(0, activeIndex - 1);
       addConsoleEntry(LOG_INFO, sf(AppStrings.Key.DELETED, removedName));
-      openTab(activeIndex);
+      loadTab(activeIndex);
       store.save(files, activeIndex);
    }
 
    private void openTab(int index) {
       if (files.isEmpty()) {
          activeIndex = -1;
+         editorLoadedFile = false;
          syncEditorState();
          rebuildTabs();
          updateProjectTitle();
          return;
       }
       persistCurrentFile();
+      loadTab(index);
+   }
+
+   private void loadTab(int index) {
+      if (files.isEmpty()) {
+         activeIndex = -1;
+         editorLoadedFile = false;
+         syncEditorState();
+         rebuildTabs();
+         updateProjectTitle();
+         return;
+      }
       activeIndex = Math.max(0, Math.min(index, files.size() - 1));
       loadingTab = true;
       editor.setCode(files.get(activeIndex).code);
       loadingTab = false;
+      editorLoadedFile = true;
       syncEditorState();
       updateProjectTitle();
       updateLineNumbers();
@@ -618,12 +995,21 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void persistCurrentFile() {
-      if (editor != null && !files.isEmpty() && activeIndex >= 0 && activeIndex < files.size()) {
+      if (editor != null && editorLoadedFile && !files.isEmpty() && activeIndex >= 0 && activeIndex < files.size()) {
          SketchFile file = files.get(activeIndex);
          file.code = editor.code();
          if (file.documentUri != null) {
             writeDocumentFile(file.documentUri, file.code);
+         } else if (store != null) {
+            store.saveFile(file, activeIndex);
          }
+      }
+   }
+
+   private void flushAutosave() {
+      persistCurrentFile();
+      if (store != null) {
+         store.save(files, activeIndex);
       }
    }
 
@@ -668,7 +1054,7 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void clearOpenFiles() {
-      persistCurrentFile();
+      flushAutosave();
       files.clear();
       activeIndex = -1;
       syncEditorState();
@@ -687,6 +1073,7 @@ public final class MainActivity extends ComponentActivity {
             loadingTab = true;
             editor.setCode("");
             loadingTab = false;
+            editorLoadedFile = false;
             editor.clearFocus();
          }
       }
@@ -728,17 +1115,7 @@ public final class MainActivity extends ComponentActivity {
 
    private void resetToInternalSketchbook() {
       store.refreshStorageState();
-      File sketchbookRoot = store == null ? null : store.sketchbookDir();
-      File currentProjectDir = store == null ? null : store.currentProjectDir();
-      fileRoot = sketchbookRoot == null ? null : DocumentFile.fromFile(sketchbookRoot);
-      selectedFolder = currentProjectDir == null ? fileRoot : DocumentFile.fromFile(currentProjectDir);
-      expandedFolders.clear();
-      if (fileRoot != null) {
-         expandedFolders.add(fileKey(fileRoot));
-      }
-      if (selectedFolder != null) {
-         expandedFolders.add(fileKey(selectedFolder));
-      }
+      syncFilePanelToCurrentProject();
    }
 
    private boolean needsAllFilesAccessForSketchbook() {
@@ -785,7 +1162,7 @@ public final class MainActivity extends ComponentActivity {
       });
 
       filePanelScrim = new View(this);
-      filePanelScrim.setBackgroundColor(Color.argb(110, 0, 0, 0));
+      filePanelScrim.setBackgroundColor(theme.scrim);
       filePanelScrim.setAlpha(0f);
       filePanelScrim.setOnClickListener(view -> hideFilePanel());
       overlay.addView(filePanelScrim, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
@@ -1023,6 +1400,11 @@ public final class MainActivity extends ComponentActivity {
          return;
       }
 
+      if (isSketchbookRoot(fileRoot)) {
+         renderApdeSketchbookTree();
+         return;
+      }
+
       updateFilePanelTitle();
       DocumentFile[] children = fileRoot.listFiles();
       if (children == null || children.length == 0) {
@@ -1033,6 +1415,250 @@ public final class MainActivity extends ComponentActivity {
       for (DocumentFile child : children) {
          renderDocument(child, 0);
       }
+   }
+
+   private void renderApdeSketchbookTree() {
+      updateFilePanelTitle();
+      DocumentFile sketches = sketchbookSection(SKETCHES_DIR_NAME, store == null ? null : store.sketchesDir());
+      DocumentFile examples = sketchbookSection(EXAMPLES_DIR_NAME, store == null ? null : store.examplesDir());
+      DocumentFile libraryExamples = sketchbookSection(LIBRARY_EXAMPLES_DIR_NAME, store == null ? null : store.libraryExamplesDir());
+      DocumentFile recent = sketchbookSection(RECENT_DIR_NAME, store == null ? null : store.recentDir());
+
+      renderSketchbookSection(SKETCHES_DIR_NAME, SECTION_SKETCHES, sketches);
+      if (expandedFolders.contains(SECTION_SKETCHES)) {
+         renderSectionDirectoryContents(sketches, 1, true);
+      }
+
+      renderSketchbookSection(EXAMPLES_DIR_NAME, SECTION_EXAMPLES, examples);
+      if (expandedFolders.contains(SECTION_EXAMPLES)) {
+         renderSectionDirectoryContents(examples, 1, false);
+      }
+
+      renderSketchbookSection(LIBRARY_EXAMPLES_DIR_NAME, SECTION_LIBRARY_EXAMPLES, libraryExamples);
+      if (expandedFolders.contains(SECTION_LIBRARY_EXAMPLES)) {
+         renderSectionDirectoryContents(libraryExamples, 1, false);
+      }
+
+      renderSketchbookSection("Recent Sketches", SECTION_RECENT, recent);
+      if (expandedFolders.contains(SECTION_RECENT)) {
+         List<File> recentProjects = store == null ? new ArrayList<>() : store.recentProjects();
+         if (recentProjects.isEmpty()) {
+            fileTreeContent.addView(createIndentedMutedText(s(AppStrings.Key.NO_RECENT_SKETCHES), 1));
+         } else {
+            for (File project : recentProjects) {
+               fileTreeContent.addView(createProjectRow(project, 1));
+            }
+         }
+      }
+
+      renderSketchbookRootExtras();
+   }
+
+   private DocumentFile sketchbookSection(String name, File fallbackDir) {
+      DocumentFile section = fileRoot == null ? null : fileRoot.findFile(name);
+      if (section != null && section.isDirectory()) {
+         return section;
+      }
+      return fallbackDir == null ? null : DocumentFile.fromFile(fallbackDir);
+   }
+
+   private void renderSketchbookSection(String title, String key, DocumentFile sectionDir) {
+      fileTreeContent.addView(createSectionRow(title, key, sectionDir));
+   }
+
+   private void renderSectionDirectoryContents(DocumentFile sectionDir, int depth, boolean markSketchProjects) {
+      if (sectionDir == null || !sectionDir.isDirectory()) {
+         fileTreeContent.addView(createIndentedMutedText(s(AppStrings.Key.THIS_PROJECT_IS_EMPTY), depth));
+         return;
+      }
+      DocumentFile[] children = sectionDir.listFiles();
+      if (children == null || children.length == 0) {
+         fileTreeContent.addView(createIndentedMutedText(s(AppStrings.Key.THIS_PROJECT_IS_EMPTY), depth));
+         return;
+      }
+      sortDocuments(children);
+      for (DocumentFile child : children) {
+         File localSketchProject = markSketchProjects ? localSketchProjectForDocument(child) : null;
+         if (localSketchProject != null) {
+            fileTreeContent.addView(createProjectRow(localSketchProject, depth));
+            continue;
+         }
+         renderDocument(child, depth);
+      }
+   }
+
+   private File localSketchProjectForDocument(DocumentFile document) {
+      if (document == null || !document.isDirectory() || !hasDirectPdeFile(document)) {
+         return null;
+      }
+      Uri uri = document.getUri();
+      if (uri != null && "file".equalsIgnoreCase(uri.getScheme()) && uri.getPath() != null) {
+         File project = new File(uri.getPath());
+         return store != null && store.isSketchProject(project) ? project : null;
+      }
+      File sketchesDir = store == null ? null : store.sketchesDir();
+      File project = sketchesDir == null ? null : new File(sketchesDir, displayName(document));
+      return project != null && store.isSketchProject(project) ? project : null;
+   }
+
+   private boolean hasDirectPdeFile(DocumentFile directory) {
+      DocumentFile[] children = directory.listFiles();
+      for (DocumentFile child : children) {
+         if (child.isFile() && displayName(child).toLowerCase(Locale.US).endsWith(".pde")) {
+            return true;
+         }
+      }
+      return false;
+   }
+
+   private void sortLocalFiles(File[] files) {
+      Arrays.sort(files, (left, right) -> {
+         if (left.isDirectory() != right.isDirectory()) {
+            return left.isDirectory() ? -1 : 1;
+         }
+         return left.getName().compareToIgnoreCase(right.getName());
+      });
+   }
+
+   private void renderSketchbookRootExtras() {
+      if (fileRoot == null || !fileRoot.isDirectory()) {
+         return;
+      }
+      DocumentFile[] children = fileRoot.listFiles();
+      if (children == null || children.length == 0) {
+         return;
+      }
+      sortDocuments(children);
+      for (DocumentFile child : children) {
+         if (!child.isDirectory()) {
+            continue;
+         }
+         if (isManagedSketchbookSection(child)) {
+            continue;
+         }
+         renderDocument(child, 0);
+      }
+   }
+
+   private boolean isManagedSketchbookSection(DocumentFile file) {
+      if (file == null) {
+         return false;
+      }
+      String name = displayName(file);
+      return SKETCHES_DIR_NAME.equals(name)
+         || EXAMPLES_DIR_NAME.equals(name)
+         || LIBRARY_EXAMPLES_DIR_NAME.equals(name)
+         || RECENT_DIR_NAME.equals(name);
+   }
+
+   private LinearLayout createSectionRow(String title, String key, DocumentFile sectionDir) {
+      boolean expanded = expandedFolders.contains(key);
+      boolean selected = selectedFolder != null && sectionDir != null && fileKey(selectedFolder).equals(fileKey(sectionDir));
+
+      LinearLayout row = new LinearLayout(this);
+      row.setGravity(Gravity.CENTER_VERTICAL);
+      row.setPadding(dp(8), 0, dp(8), 0);
+      UiStyles.rounded(row, selected ? theme.surfaceSoft : theme.surface, dp(8));
+
+      FileIconView chevron = new FileIconView(this, theme, expanded
+         ? FileIconView.MODE_CHEVRON_DOWN
+         : FileIconView.MODE_CHEVRON_RIGHT);
+      row.addView(chevron, new LinearLayout.LayoutParams(dp(18), dp(38)));
+
+      FileIconView icon = new FileIconView(this, theme, FileIconView.MODE_FOLDER_CODE);
+      LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(24), dp(24));
+      iconParams.setMargins(0, 0, dp(8), 0);
+      row.addView(icon, iconParams);
+
+      TextView name = new TextView(this);
+      name.setText(title);
+      name.setTextColor(theme.text);
+      name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+      name.setSingleLine(true);
+      name.setEllipsize(TextUtils.TruncateAt.END);
+      name.setGravity(Gravity.CENTER_VERTICAL);
+      name.setIncludeFontPadding(false);
+      row.addView(name, new LinearLayout.LayoutParams(0, dp(38), 1f));
+
+      row.setOnClickListener(view -> {
+         if (sectionDir != null) {
+            selectedFolder = sectionDir;
+         }
+         if (expandedFolders.contains(key)) {
+            expandedFolders.remove(key);
+         } else {
+            expandedFolders.add(key);
+         }
+         renderFileTree();
+      });
+
+      LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40));
+      params.setMargins(0, 0, 0, dp(2));
+      row.setLayoutParams(params);
+      return row;
+   }
+
+   private LinearLayout createProjectRow(File projectDir, int depth) {
+      boolean selected = store != null && samePath(projectDir, store.currentProjectDir());
+
+      LinearLayout row = new LinearLayout(this);
+      row.setGravity(Gravity.CENTER_VERTICAL);
+      row.setPadding(dp(8 + depth * 14), 0, dp(8), 0);
+      row.setHapticFeedbackEnabled(settings == null || settings.hapticEnabled());
+      UiStyles.rounded(row, selected ? theme.surfaceSoft : theme.surface, dp(8));
+
+      FileIconView chevron = new FileIconView(this, theme, FileIconView.MODE_CHEVRON_RIGHT);
+      chevron.setVisibility(View.INVISIBLE);
+      row.addView(chevron, new LinearLayout.LayoutParams(dp(18), dp(38)));
+
+      FileIconView icon = new FileIconView(this, theme, FileIconView.MODE_SKETCH_PROJECT);
+      LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(24), dp(24));
+      iconParams.setMargins(0, 0, dp(8), 0);
+      row.addView(icon, iconParams);
+
+      TextView name = new TextView(this);
+      name.setText(projectDir.getName());
+      name.setTextColor(theme.text);
+      name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+      name.setSingleLine(true);
+      name.setEllipsize(TextUtils.TruncateAt.END);
+      name.setGravity(Gravity.CENTER_VERTICAL);
+      name.setIncludeFontPadding(false);
+      row.addView(name, new LinearLayout.LayoutParams(0, dp(38), 1f));
+
+      row.setOnClickListener(view -> {
+         openInternalProject(projectDir);
+         hideFilePanel();
+         addConsoleEntry(LOG_INFO, sf(AppStrings.Key.OPENED_FOLDER, projectDir.getName()));
+      });
+      row.setOnLongClickListener(view -> {
+         if (settings != null && settings.hapticEnabled()) {
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+         }
+         showProjectNodeMenu(view, projectDir);
+         return true;
+      });
+
+      LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40));
+      params.setMargins(0, 0, 0, dp(2));
+      row.setLayoutParams(params);
+      return row;
+   }
+
+   private TextView createIndentedMutedText(String text, int depth) {
+      TextView view = createMutedText(text);
+      view.setPadding(dp(8 + depth * 14 + 42), dp(8), dp(8), dp(8));
+      return view;
+   }
+
+   private boolean sameDocumentPath(DocumentFile document, File file) {
+      if (document == null || file == null || document.getUri() == null) {
+         return false;
+      }
+      Uri uri = document.getUri();
+      return "file".equalsIgnoreCase(uri.getScheme())
+         && uri.getPath() != null
+         && samePath(new File(uri.getPath()), file);
    }
 
    private void renderDocument(DocumentFile document, int depth) {
@@ -1143,19 +1769,31 @@ public final class MainActivity extends ComponentActivity {
 
    private void showFileNodeMenu(View anchor, DocumentFile document) {
       if (document.isDirectory()) {
-         showContextMenu(anchor, dp(196),
-            new ContextMenuItem(s(AppStrings.Key.NEW_FILE_MENU), this::createFileInSelectedFolder),
-            new ContextMenuItem(s(AppStrings.Key.NEW_FOLDER_MENU), this::createFolderInSelectedFolder),
-            new ContextMenuItem(s(AppStrings.Key.RENAME), () -> showRenameDocumentDialog(document)),
-            new ContextMenuItem(s(AppStrings.Key.DELETE), () -> showDeleteDocumentConfirmation(document))
+         showContextMenu(anchor, dp(224),
+            new ContextMenuItem(s(AppStrings.Key.NEW_FILE_MENU), R.drawable.context_menu_note_add_24, this::createFileInSelectedFolder),
+            new ContextMenuItem(s(AppStrings.Key.NEW_FOLDER_MENU), R.drawable.context_menu_create_new_folder_24, this::createFolderInSelectedFolder),
+            new ContextMenuItem(s(AppStrings.Key.RENAME), R.drawable.context_menu_edit_24, () -> showRenameDocumentDialog(document)),
+            ContextMenuItem.destructive(s(AppStrings.Key.DELETE), R.drawable.context_menu_delete_24, () -> showDeleteDocumentConfirmation(document))
          );
       } else {
-         showContextMenu(anchor, dp(172),
-            new ContextMenuItem(s(AppStrings.Key.OPEN), () -> openDocumentFile(document)),
-            new ContextMenuItem(s(AppStrings.Key.RENAME), () -> showRenameDocumentDialog(document)),
-            new ContextMenuItem(s(AppStrings.Key.DELETE), () -> showDeleteDocumentConfirmation(document))
+         showContextMenu(anchor, dp(208),
+            new ContextMenuItem(s(AppStrings.Key.OPEN), R.drawable.context_menu_open_in_new_24, () -> openDocumentFile(document)),
+            new ContextMenuItem(s(AppStrings.Key.RENAME), R.drawable.context_menu_edit_24, () -> showRenameDocumentDialog(document)),
+            ContextMenuItem.destructive(s(AppStrings.Key.DELETE), R.drawable.context_menu_delete_24, () -> showDeleteDocumentConfirmation(document))
          );
       }
+   }
+
+   private void showProjectNodeMenu(View anchor, File projectDir) {
+      showContextMenu(anchor, dp(224),
+         new ContextMenuItem(s(AppStrings.Key.OPEN), R.drawable.context_menu_open_in_new_24, () -> {
+            openInternalProject(projectDir);
+            hideFilePanel();
+            addConsoleEntry(LOG_INFO, sf(AppStrings.Key.OPENED_FOLDER, projectDir.getName()));
+         }),
+         new ContextMenuItem(s(AppStrings.Key.RENAME), R.drawable.context_menu_edit_24, () -> showRenameProjectDialog(projectDir)),
+         ContextMenuItem.destructive(s(AppStrings.Key.DELETE_SKETCH), R.drawable.context_menu_delete_24, () -> showDeleteProjectConfirmation(projectDir))
+      );
    }
 
    private void createFolderInSelectedFolder() {
@@ -1206,6 +1844,10 @@ public final class MainActivity extends ComponentActivity {
 
    private DocumentFile writableSelectedFolder() {
       DocumentFile folder = selectedFolder != null ? selectedFolder : fileRoot;
+      if (isSystemSketchbookSection(folder) || isSketchProjectFolder(folder)) {
+         showToast(s(AppStrings.Key.CANNOT_CREATE_IN_SYSTEM_FOLDER));
+         return null;
+      }
       if (folder == null || !folder.isDirectory() || !folder.canWrite()) {
          addConsoleEntry(LOG_ERROR, s(AppStrings.Key.CHOOSE_WRITABLE_FOLDER_FIRST));
          activeConsoleTab = LOG_ERROR;
@@ -1213,6 +1855,48 @@ public final class MainActivity extends ComponentActivity {
          return null;
       }
       return folder;
+   }
+
+   private boolean isSystemSketchbookSection(DocumentFile folder) {
+      if (folder == null || !isSketchbookRoot(fileRoot)) {
+         return false;
+      }
+      return sameDocument(folder, sketchbookSection(SKETCHES_DIR_NAME, store == null ? null : store.sketchesDir()))
+         || sameDocument(folder, sketchbookSection(EXAMPLES_DIR_NAME, store == null ? null : store.examplesDir()))
+         || sameDocument(folder, sketchbookSection(LIBRARY_EXAMPLES_DIR_NAME, store == null ? null : store.libraryExamplesDir()))
+         || sameDocument(folder, sketchbookSection(RECENT_DIR_NAME, store == null ? null : store.recentDir()));
+   }
+
+   private boolean isSketchProjectFolder(DocumentFile folder) {
+      if (folder == null || store == null || !isSketchbookRoot(fileRoot)) {
+         return false;
+      }
+      Uri uri = folder.getUri();
+      if (uri != null && "file".equalsIgnoreCase(uri.getScheme()) && uri.getPath() != null) {
+         return store.isSketchProject(new File(uri.getPath()));
+      }
+      DocumentFile sketches = sketchbookSection(SKETCHES_DIR_NAME, store.sketchesDir());
+      if (sketches == null) {
+         return false;
+      }
+      File candidate = new File(store.sketchesDir(), displayName(folder));
+      return isDirectChildOf(folder, sketches) && store.isSketchProject(candidate);
+   }
+
+   private boolean isDirectChildOf(DocumentFile child, DocumentFile parent) {
+      if (child == null || parent == null) {
+         return false;
+      }
+      DocumentFile found = parent.findFile(displayName(child));
+      return found != null && fileKey(found).equals(fileKey(child));
+   }
+
+   private boolean sameDocument(DocumentFile left, DocumentFile right) {
+      return left != null && right != null && fileKey(left).equals(fileKey(right));
+   }
+
+   private void showToast(String message) {
+      Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
    }
 
    private void showDeleteDocumentConfirmation(DocumentFile document) {
@@ -1285,6 +1969,38 @@ public final class MainActivity extends ComponentActivity {
       openDocumentFile(document, true);
    }
 
+   private void openExternalPdeIntent(Intent intent) {
+      if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction()) || intent.getData() == null) {
+         return;
+      }
+      DocumentFile document = externalDocument(intent.getData());
+      if (document == null || !document.isFile() || !isPdeDocument(document)) {
+         return;
+      }
+      openDocumentFile(document);
+   }
+
+   private DocumentFile externalDocument(Uri uri) {
+      if (uri == null) {
+         return null;
+      }
+      if ("file".equalsIgnoreCase(uri.getScheme())) {
+         String path = uri.getPath();
+         return path == null || path.isEmpty() ? null : DocumentFile.fromFile(new File(path));
+      }
+      return DocumentFile.fromSingleUri(this, uri);
+   }
+
+   private boolean isPdeDocument(DocumentFile document) {
+      String name = document.getName();
+      if (name != null && name.toLowerCase(Locale.US).endsWith(".pde")) {
+         return true;
+      }
+      Uri uri = document.getUri();
+      String lastSegment = uri == null ? null : uri.getLastPathSegment();
+      return lastSegment != null && lastSegment.toLowerCase(Locale.US).endsWith(".pde");
+   }
+
    private void openDocumentFile(DocumentFile document, boolean closePanel) {
       if (!document.isFile()) {
          return;
@@ -1296,7 +2012,7 @@ public final class MainActivity extends ComponentActivity {
          return;
       }
 
-      persistCurrentFile();
+      flushAutosave();
       String uri = document.getUri().toString();
       if (isProjectLocalFile(document)) {
          File projectDir = localProjectDir(document);
@@ -1319,6 +2035,17 @@ public final class MainActivity extends ComponentActivity {
                return;
             }
          }
+         if (projectDir != null && displayName(document).toLowerCase(Locale.US).endsWith(".pde")) {
+            File localFile = new File(document.getUri().getPath());
+            files.add(new SketchFile(displayName(document), readDocumentFile(document), null,
+               projectDir.getAbsolutePath(), localFile.getAbsolutePath()));
+            openTab(files.size() - 1);
+            if (closePanel) {
+               hideFilePanel();
+            }
+            addConsoleEntry(LOG_INFO, sf(AppStrings.Key.OPENED, displayName(document)));
+            return;
+         }
       }
       for (int i = 0; i < files.size(); i++) {
          if (uri.equals(files.get(i).documentUri)) {
@@ -1331,7 +2058,8 @@ public final class MainActivity extends ComponentActivity {
       }
       File localProjectDir = localProjectDir(document);
       files.add(new SketchFile(displayName(document), readDocumentFile(document), uri,
-         localProjectDir == null ? null : localProjectDir.getAbsolutePath()));
+         localProjectDir == null ? null : localProjectDir.getAbsolutePath(),
+         localFilePath(document)));
       openTab(files.size() - 1);
       if (closePanel) {
          hideFilePanel();
@@ -1377,29 +2105,29 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void openInternalProject(File projectDir) {
-      persistCurrentFile();
-      store.switchProject(projectDir.getName());
+      openInternalProject(projectDir, true);
+   }
+
+   private void openInternalProject(File projectDir, boolean saveCurrentProjectFirst) {
+      if (saveCurrentProjectFirst) {
+         flushAutosave();
+      }
+      store.switchProject(projectDir);
       files.clear();
       files.addAll(store.loadFiles());
       activeIndex = files.isEmpty() ? -1 : 0;
-      fileRoot = DocumentFile.fromFile(store.sketchbookDir());
-      selectedFolder = DocumentFile.fromFile(store.currentProjectDir());
-      expandedFolders.clear();
-      if (fileRoot != null) {
-         expandedFolders.add(fileKey(fileRoot));
-      }
-      if (selectedFolder != null) {
-         expandedFolders.add(fileKey(selectedFolder));
-      }
+      syncFilePanelToCurrentProject();
       if (!files.isEmpty()) {
          loadingTab = true;
          editor.setCode(files.get(activeIndex).code);
          loadingTab = false;
+         editorLoadedFile = true;
          updateLineNumbers();
       } else if (editor != null) {
          loadingTab = true;
          editor.setCode("");
          loadingTab = false;
+         editorLoadedFile = false;
          editor.clearFocus();
       }
       syncEditorState();
@@ -1414,6 +2142,25 @@ public final class MainActivity extends ComponentActivity {
       store.save(files, activeIndex);
    }
 
+   private void syncFilePanelToCurrentProject() {
+      if (store == null) {
+         fileRoot = null;
+         selectedFolder = null;
+         expandedFolders.clear();
+         return;
+      }
+      File currentProjectDir = store.currentProjectDir();
+      File root = store.sketchbookDir();
+      fileRoot = root == null ? null : DocumentFile.fromFile(root);
+      File selectedDir = currentProjectDir == null ? store.sketchesDir() : currentProjectDir;
+      selectedFolder = selectedDir == null ? fileRoot : DocumentFile.fromFile(selectedDir);
+      expandedFolders.clear();
+      if (fileRoot != null) {
+         expandedFolders.add(fileKey(fileRoot));
+      }
+      expandedFolders.add(SECTION_SKETCHES);
+   }
+
    private File localProjectDir(DocumentFile document) {
       Uri uri = document.getUri();
       if (uri == null || !"file".equalsIgnoreCase(uri.getScheme()) || store == null) {
@@ -1424,35 +2171,67 @@ public final class MainActivity extends ComponentActivity {
          return null;
       }
       File file = new File(path);
-      File projectDir = file.getParentFile();
-      File sketchbookDir = store.sketchbookDir();
-      if (projectDir == null || sketchbookDir == null) {
+      File sketchesDir = store.sketchesDir();
+      if (sketchesDir == null) {
          return null;
       }
-      String projectPath = projectDir.getAbsolutePath();
-      String sketchbookPath = sketchbookDir.getAbsolutePath();
-      return projectPath.startsWith(sketchbookPath + File.separator) ? projectDir : null;
+      File candidate = document.isDirectory() ? file : file.getParentFile();
+      while (candidate != null && candidate.getParentFile() != null) {
+         if (samePath(candidate.getParentFile(), sketchesDir)) {
+            return candidate;
+         }
+         candidate = candidate.getParentFile();
+      }
+      return null;
+   }
+
+   private String localFilePath(DocumentFile document) {
+      if (document == null) {
+         return null;
+      }
+      Uri uri = document.getUri();
+      if (uri == null || !"file".equalsIgnoreCase(uri.getScheme()) || uri.getPath() == null) {
+         return null;
+      }
+      return new File(uri.getPath()).getAbsolutePath();
+   }
+
+   private boolean samePath(File left, File right) {
+      if (left == null || right == null) {
+         return false;
+      }
+      try {
+         return left.getCanonicalFile().equals(right.getCanonicalFile());
+      } catch (IOException exception) {
+         return left.getAbsoluteFile().equals(right.getAbsoluteFile());
+      }
    }
 
    private boolean isSketchbookRoot(DocumentFile root) {
-      if (root == null) {
+      if (root == null || store == null || store.sketchbookDir() == null) {
          return false;
       }
-      DocumentFile internalRoot = DocumentFile.fromFile(store.sketchbookDir());
-      return internalRoot != null && fileKey(internalRoot).equals(fileKey(root));
+      Uri uri = root.getUri();
+      if (uri != null && "file".equalsIgnoreCase(uri.getScheme())) {
+         DocumentFile internalRoot = DocumentFile.fromFile(store.sketchbookDir());
+         return internalRoot != null && fileKey(internalRoot).equals(fileKey(root));
+      }
+      String expectedName = store.sketchbookDir().getName();
+      String rootName = displayName(root);
+      return expectedName.equals(rootName) || SKETCHBOOK_DIR_NAME.equals(rootName);
    }
 
    private String sanitizeProjectFolderName(String value) {
-      String sanitized = value == null ? "" : value.replace("/", "").replace("\\", "").trim();
+      String sanitized = value == null ? "" : value.replace("/", "").replace("\\", "").trim().replaceAll("\\s+", "_");
       return sanitized.isEmpty() ? store.currentProjectName() : sanitized;
    }
 
    private String uniqueProjectFolderName(String baseName) {
-      File root = store.sketchbookDir();
+      File root = store.sketchesDir();
       String name = baseName;
       int copy = 2;
       while (new File(root, name).exists()) {
-         name = baseName + " " + copy;
+         name = baseName + "_" + copy;
          copy++;
       }
       return name;
@@ -1468,7 +2247,7 @@ public final class MainActivity extends ComponentActivity {
          }
          DocumentFile[] children = source.listFiles();
          for (DocumentFile child : children) {
-            File targetChild = new File(targetDir, displayName(child));
+            File targetChild = new File(targetDir, safeLocalChildName(displayName(child)));
             if (!copyDocumentTreeToDirectory(child, targetChild)) {
                return false;
             }
@@ -1501,13 +2280,18 @@ public final class MainActivity extends ComponentActivity {
          if (output != null) {
             output.write((content == null ? "" : content).getBytes(StandardCharsets.UTF_8));
          }
-      } catch (IOException exception) {
+      } catch (IOException | RuntimeException exception) {
          addConsoleEntry(LOG_ERROR, s(AppStrings.Key.COULD_NOT_SAVE_EXTERNAL_FILE));
       }
    }
 
    private String normalizeDocumentName(String value) {
       return value == null ? "" : value.replace("/", "").replace("\\", "").trim();
+   }
+
+   private String safeLocalChildName(String value) {
+      String name = normalizeDocumentName(value);
+      return name.isEmpty() ? s(AppStrings.Key.UNTITLED) : name;
    }
 
    private DocumentFile createDocumentFile(DocumentFile parent, String name) {
@@ -1575,7 +2359,7 @@ public final class MainActivity extends ComponentActivity {
       for (int i = files.size() - 1; i >= 0; i--) {
          String uri = files.get(i).documentUri;
          boolean deletedExternalTab = uri != null && deletedUris.contains(uri);
-         boolean deletedLocalTab = belongsToDeletedLocalProject(files.get(i).localProjectPath, deletedLocalProjectPath);
+         boolean deletedLocalTab = belongsToDeletedLocalPath(files.get(i), deletedLocalProjectPath);
          if (deletedExternalTab || deletedLocalTab || (uri == null && deletedCurrentLocalProject)) {
             files.remove(i);
             removedAny = true;
@@ -1583,8 +2367,8 @@ public final class MainActivity extends ComponentActivity {
                activeIndex--;
             } else if (i == activeIndex) {
                activeIndex = files.isEmpty() ? -1 : Math.max(0, activeIndex - 1);
-      }
-    }
+            }
+         }
       }
       if (removedAny) {
          if (files.isEmpty()) {
@@ -1600,29 +2384,22 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private String localProjectDirForDocument(DocumentFile document) {
-      if (document != null && document.isDirectory()) {
-         Uri uri = document.getUri();
-         if (uri != null && "file".equalsIgnoreCase(uri.getScheme()) && uri.getPath() != null) {
-            return new File(uri.getPath()).getAbsolutePath();
-         }
-      }
-      File projectDir = localProjectDir(document);
-      if (projectDir != null) {
-         return projectDir.getAbsolutePath();
-      }
-      return null;
+      return localFilePath(document);
    }
 
    private boolean isCurrentLocalProject(DocumentFile document) {
       if (document == null || store == null) {
          return false;
       }
+      Uri uri = document.getUri();
+      if (!document.isDirectory() || uri == null || !"file".equalsIgnoreCase(uri.getScheme()) || uri.getPath() == null) {
+         return false;
+      }
       File currentProjectDir = store.currentProjectDir();
       if (currentProjectDir == null) {
          return false;
       }
-      String deletedProjectPath = localProjectDirForDocument(document);
-      return deletedProjectPath != null && deletedProjectPath.equals(currentProjectDir.getAbsolutePath());
+      return samePath(new File(uri.getPath()), currentProjectDir);
    }
 
    private boolean sameLocalProject(String localProjectPath, File projectDir) {
@@ -1632,12 +2409,19 @@ public final class MainActivity extends ComponentActivity {
       return localProjectPath.equals(projectDir.getAbsolutePath());
    }
 
-   private boolean belongsToDeletedLocalProject(String localProjectPath, String deletedLocalProjectPath) {
-      if (localProjectPath == null || deletedLocalProjectPath == null) {
+   private boolean belongsToDeletedLocalPath(SketchFile file, String deletedLocalPath) {
+      if (file == null || deletedLocalPath == null) {
          return false;
       }
-      return localProjectPath.equals(deletedLocalProjectPath)
-         || localProjectPath.startsWith(deletedLocalProjectPath + File.separator);
+      String localFilePath = file.localFilePath;
+      if ((localFilePath == null || localFilePath.trim().isEmpty()) && file.documentUri == null && file.localProjectPath != null) {
+         localFilePath = new File(file.localProjectPath, file.name).getAbsolutePath();
+      }
+      if (localFilePath == null || localFilePath.trim().isEmpty()) {
+         return false;
+      }
+      return localFilePath.equals(deletedLocalPath)
+         || localFilePath.startsWith(deletedLocalPath + File.separator);
    }
 
    private String uniqueChildName(DocumentFile parent, String requestedName) {
@@ -1676,16 +2460,87 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void showProjectMenu(View anchor) {
-      boolean localSketch = fileRoot != null && isSketchbookRoot(fileRoot);
-      showContextMenu(anchor, dp(238),
-         new ContextMenuItem(s(AppStrings.Key.NEW_SKETCH), this::createNewSketchProject),
-         new ContextMenuItem(s(AppStrings.Key.LOAD_SKETCH), this::showFilePanel),
-         new ContextMenuItem(localSketch ? s(AppStrings.Key.RENAME_SKETCH) : s(AppStrings.Key.MOVE_TO_SKETCHBOOK), localSketch ? this::renameCurrentSketch : this::moveCurrentProjectToSketchbook),
-         new ContextMenuItem(s(AppStrings.Key.DELETE_SKETCH), this::deleteCurrentSketch),
-         new ContextMenuItem(s(AppStrings.Key.TOOLS), this::showToolsDialog),
-         new ContextMenuItem(s(AppStrings.Key.SKETCH_PROPERTIES), this::openSketchProperties),
-         new ContextMenuItem(s(AppStrings.Key.SETTINGS), this::openSettings)
+      showContextMenu(anchor, dp(274),
+         new ContextMenuItem(s(AppStrings.Key.NEW_SKETCH), R.drawable.context_menu_note_add_24, this::createNewSketchProject),
+         new ContextMenuItem(s(AppStrings.Key.RENAME_SKETCH), R.drawable.context_menu_edit_24, this::renameCurrentSketch),
+         ContextMenuItem.destructive(s(AppStrings.Key.DELETE_SKETCH), R.drawable.context_menu_delete_24, this::deleteCurrentSketch),
+         new ContextMenuItem(s(AppStrings.Key.RECENT_SKETCHES), R.drawable.context_menu_history_24, this::showRecentProjectsDialog),
+         new ContextMenuItem(s(AppStrings.Key.TOOLS), R.drawable.context_menu_build_24, this::showToolsDialog),
+         new ContextMenuItem(s(AppStrings.Key.SKETCH_PROPERTIES), R.drawable.context_menu_tune_24, this::openSketchProperties),
+         new ContextMenuItem(s(AppStrings.Key.SETTINGS), R.drawable.context_menu_settings_24, this::openSettings)
       );
+   }
+
+   private void saveCurrentSketch() {
+      flushAutosave();
+      File projectDir = store == null ? null : store.currentProjectDir();
+      if (projectDir != null) {
+         addConsoleEntry(LOG_INFO, sf(AppStrings.Key.SAVED_SKETCH_TO, projectDir.getAbsolutePath()));
+      }
+   }
+
+   private boolean isCurrentProjectRoot(DocumentFile root) {
+      if (root == null || store == null) {
+         return false;
+      }
+      File currentProjectDir = store.currentProjectDir();
+      Uri uri = root.getUri();
+      return currentProjectDir != null
+         && uri != null
+         && "file".equalsIgnoreCase(uri.getScheme())
+         && uri.getPath() != null
+         && samePath(new File(uri.getPath()), currentProjectDir);
+   }
+
+   private void showRecentProjectsDialog() {
+      Dialog dialog = new Dialog(this);
+      dialog.getWindow();
+
+      LinearLayout content = new LinearLayout(this);
+      content.setOrientation(LinearLayout.VERTICAL);
+      content.setPadding(dp(10), dp(10), dp(10), dp(10));
+      UiStyles.roundedStroke(content, theme.surface, theme.border, dp(1), dp(14));
+
+      TextView titleView = new TextView(this);
+      titleView.setText(s(AppStrings.Key.RECENT_SKETCHES));
+      titleView.setTextColor(theme.text);
+      titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+      titleView.setTypeface(Typeface.DEFAULT_BOLD);
+      titleView.setPadding(dp(8), dp(4), dp(8), dp(10));
+      content.addView(titleView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+      List<File> recentProjects = store == null ? new ArrayList<>() : store.recentProjects();
+      if (recentProjects.isEmpty()) {
+         TextView empty = createMutedText(s(AppStrings.Key.NO_RECENT_SKETCHES));
+         content.addView(empty, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)));
+      } else {
+         for (File project : recentProjects) {
+            TextView row = new TextView(this);
+            row.setText(project.getName());
+            row.setTextColor(theme.text);
+            row.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setSingleLine(true);
+            row.setEllipsize(TextUtils.TruncateAt.END);
+            row.setPadding(dp(12), 0, dp(12), 0);
+            UiStyles.rounded(row, theme.surface, dp(8));
+            row.setOnClickListener(view -> {
+               dialog.dismiss();
+               openInternalProject(project);
+               addConsoleEntry(LOG_INFO, sf(AppStrings.Key.OPENED_FOLDER, project.getName()));
+            });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
+            params.setMargins(0, 0, 0, dp(4));
+            content.addView(row, params);
+         }
+      }
+
+      dialog.setContentView(content, new ViewGroup.LayoutParams(dp(300), ViewGroup.LayoutParams.WRAP_CONTENT));
+      if (dialog.getWindow() != null) {
+         dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+         dialog.getWindow().setGravity(Gravity.CENTER);
+      }
+      dialog.show();
    }
 
    private void showToolsDialog() {
@@ -1706,21 +2561,37 @@ public final class MainActivity extends ComponentActivity {
       content.addView(titleView, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
       ContextMenuItem[] items = {
-         new ContextMenuItem(s(AppStrings.Key.AUTO_FORMAT), this::autoFormatActivePde),
-         new ContextMenuItem(s(AppStrings.Key.COLOR_SELECTOR), this::showColorSelectorDialog),
-         new ContextMenuItem(s(AppStrings.Key.FIND_REPLACE), () -> showPlaceholderAction(s(AppStrings.Key.FIND_REPLACE))),
-         new ContextMenuItem(s(AppStrings.Key.IMPORT_LIBRARY), () -> showPlaceholderAction(s(AppStrings.Key.IMPORT_LIBRARY))),
-         new ContextMenuItem(s(AppStrings.Key.OPEN_REFERENCE), this::openReference),
-         new ContextMenuItem(s(AppStrings.Key.AI_AGENT), () -> showPlaceholderAction(s(AppStrings.Key.AI_AGENT)))
+         new ContextMenuItem(s(AppStrings.Key.AUTO_FORMAT), R.drawable.tools_format_paint_24, this::autoFormatActivePde),
+         new ContextMenuItem(s(AppStrings.Key.COLOR_SELECTOR), R.drawable.tools_color_lens_24, this::showColorSelectorDialog),
+         new ContextMenuItem(s(AppStrings.Key.FIND_REPLACE), R.drawable.tools_find_replace_24, this::showFindReplaceDialog),
+         new ContextMenuItem(s(AppStrings.Key.IMPORT_LIBRARY), R.drawable.tools_library_add_24, () -> showPlaceholderAction(s(AppStrings.Key.IMPORT_LIBRARY))),
+         new ContextMenuItem(s(AppStrings.Key.OPEN_REFERENCE), R.drawable.tools_menu_book_24, this::openReference),
+         new ContextMenuItem(s(AppStrings.Key.AI_AGENT), R.drawable.tools_smart_toy_24, () -> showPlaceholderAction(s(AppStrings.Key.AI_AGENT)))
       };
       for (ContextMenuItem item : items) {
-         TextView row = new TextView(this);
-         row.setText(item.title);
-         row.setTextColor(theme.text);
-         row.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+         LinearLayout row = new LinearLayout(this);
          row.setGravity(Gravity.CENTER_VERTICAL);
          row.setPadding(dp(12), 0, dp(12), 0);
          UiStyles.rounded(row, theme.surface, dp(8));
+
+         ImageView icon = new ImageView(this);
+         icon.setImageResource(item.iconResource);
+         icon.setColorFilter(theme.textMuted);
+         icon.setScaleType(ImageView.ScaleType.CENTER);
+         LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(24), dp(44));
+         iconParams.setMargins(0, 0, dp(8), 0);
+         row.addView(icon, iconParams);
+
+         TextView title = new TextView(this);
+         title.setText(item.title);
+         title.setTextColor(theme.text);
+         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+         title.setSingleLine(true);
+         title.setEllipsize(TextUtils.TruncateAt.END);
+         title.setGravity(Gravity.CENTER_VERTICAL);
+         title.setIncludeFontPadding(false);
+         row.addView(title, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f));
+
          row.setOnClickListener(view -> {
             dialog.dismiss();
             item.action.run();
@@ -1730,7 +2601,7 @@ public final class MainActivity extends ComponentActivity {
          content.addView(row, params);
       }
 
-      dialog.setContentView(content, new ViewGroup.LayoutParams(dp(280), ViewGroup.LayoutParams.WRAP_CONTENT));
+      dialog.setContentView(content, new ViewGroup.LayoutParams(dp(320), ViewGroup.LayoutParams.WRAP_CONTENT));
       if (dialog.getWindow() != null) {
          dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
          dialog.getWindow().setGravity(Gravity.CENTER);
@@ -1739,6 +2610,7 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void openSettings() {
+      flushAutosave();
       startActivity(new Intent(this, SettingsActivity.class));
    }
 
@@ -1753,13 +2625,33 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void createNewSketchProject() {
+      flushAutosave();
       File projectDir = store.createNewSketchProject();
-      openInternalProject(projectDir);
+      if (projectDir == null) {
+         addConsoleEntry(LOG_ERROR, s(AppStrings.Key.COULD_NOT_CREATE_FOLDER));
+         activeConsoleTab = LOG_ERROR;
+         renderConsole();
+         return;
+      }
+      openInternalProject(projectDir, false);
       addConsoleEntry(LOG_INFO, sf(AppStrings.Key.OPENED_FOLDER, projectDir.getName()));
    }
 
+   private void saveCurrentProjectToSketchbook() {
+      flushAutosave();
+      File savedProject = store.saveCurrentProjectToSketchbook();
+      if (savedProject == null) {
+         addConsoleEntry(LOG_ERROR, s(AppStrings.Key.COULD_NOT_CREATE_FOLDER));
+         activeConsoleTab = LOG_ERROR;
+         renderConsole();
+         return;
+      }
+      openInternalProject(savedProject);
+      addConsoleEntry(LOG_INFO, sf(AppStrings.Key.OPENED_FOLDER, savedProject.getName()));
+   }
+
    private void moveCurrentProjectToSketchbook() {
-      File sketchbookRoot = store.sketchbookDir();
+      File sketchbookRoot = store.sketchesDir();
       File currentInternalProject = store.currentProjectDir();
       if (fileRoot == null || isSketchbookRoot(fileRoot)) {
          openInternalProject(currentInternalProject);
@@ -1770,6 +2662,7 @@ public final class MainActivity extends ComponentActivity {
       String targetName = uniqueProjectFolderName(sanitizeProjectFolderName(displayName(fileRoot)));
       File targetDir = new File(sketchbookRoot, targetName);
       if (!copyDocumentTreeToDirectory(fileRoot, targetDir)) {
+         deleteLocalRecursively(targetDir);
          addConsoleEntry(LOG_ERROR, s(AppStrings.Key.COULD_NOT_CREATE_FOLDER));
          activeConsoleTab = LOG_ERROR;
          renderConsole();
@@ -1779,36 +2672,68 @@ public final class MainActivity extends ComponentActivity {
       addConsoleEntry(LOG_INFO, sf(AppStrings.Key.OPENED_FOLDER, targetDir.getName()));
    }
 
+   private void deleteLocalRecursively(File file) {
+      if (file == null || !file.exists()) {
+         return;
+      }
+      if (file.isDirectory()) {
+         File[] children = file.listFiles();
+         if (children != null) {
+            for (File child : children) {
+               deleteLocalRecursively(child);
+            }
+         }
+      }
+      file.delete();
+   }
+
    private void renameCurrentSketch() {
       File currentProjectDir = store.currentProjectDir();
       if (currentProjectDir == null) {
          return;
       }
-      showTextInputDialog(s(AppStrings.Key.RENAME_SKETCH), currentProjectDir.getName(), currentProjectDir.getName(), s(AppStrings.Key.RENAME), value -> {
+      showRenameProjectDialog(currentProjectDir);
+   }
+
+   private void showRenameProjectDialog(File projectDir) {
+      if (store == null || projectDir == null) {
+         return;
+      }
+      File currentProjectDir = store.currentProjectDir();
+      boolean renamingCurrentProject = currentProjectDir != null && samePath(currentProjectDir, projectDir);
+      String oldProjectPath = projectDir.getAbsolutePath();
+      showTextInputDialog(s(AppStrings.Key.RENAME_SKETCH), projectDir.getName(), projectDir.getName(), s(AppStrings.Key.RENAME), true, value -> {
          String normalized = sanitizeProjectFolderName(value);
          if (normalized.isEmpty()) {
             return false;
          }
-         File targetDir = new File(store.sketchbookDir(), normalized);
-         if (currentProjectDir.equals(targetDir)) {
+         File targetDir = new File(store.sketchesDir(), normalized);
+         if (samePath(projectDir, targetDir)) {
             return true;
          }
-         if (targetDir.exists() || !currentProjectDir.renameTo(targetDir)) {
-            addConsoleEntry(LOG_ERROR, sf(AppStrings.Key.COULD_NOT_RENAME, currentProjectDir.getName()));
+         if (targetDir.exists() || !projectDir.renameTo(targetDir)) {
+            addConsoleEntry(LOG_ERROR, sf(AppStrings.Key.COULD_NOT_RENAME, projectDir.getName()));
             activeConsoleTab = LOG_ERROR;
             renderConsole();
             return false;
          }
-         store.switchProject(targetDir.getName());
+         if (renamingCurrentProject) {
+            store.switchProject(targetDir);
+            for (SketchFile file : files) {
+               if (file.documentUri == null && oldProjectPath.equals(file.localProjectPath)) {
+                  file.localProjectPath = targetDir.getAbsolutePath();
+                  file.localFilePath = new File(targetDir, file.name).getAbsolutePath();
+               }
+            }
+            updateProjectTitle();
+         }
          fileRoot = DocumentFile.fromFile(store.sketchbookDir());
-         selectedFolder = DocumentFile.fromFile(store.currentProjectDir());
+         selectedFolder = DocumentFile.fromFile(renamingCurrentProject ? store.currentProjectDir() : targetDir);
          expandedFolders.clear();
          if (fileRoot != null) {
             expandedFolders.add(fileKey(fileRoot));
          }
-         if (selectedFolder != null) {
-            expandedFolders.add(fileKey(selectedFolder));
-         }
+         expandedFolders.add(SECTION_SKETCHES);
          updateProjectTitle();
          renderFileTree();
          addConsoleEntry(LOG_INFO, sf(AppStrings.Key.RENAMED_TO, targetDir.getName()));
@@ -1821,22 +2746,47 @@ public final class MainActivity extends ComponentActivity {
       if (currentProjectDir == null) {
          return;
       }
-      String name = currentProjectDir.getName();
+      showDeleteProjectConfirmation(currentProjectDir);
+   }
+
+   private void showDeleteProjectConfirmation(File projectDir) {
+      if (store == null || projectDir == null) {
+         return;
+      }
+      String name = projectDir.getName();
       showConfirmationDialog(s(AppStrings.Key.DELETE_SKETCH), sf(AppStrings.Key.DELETE_QUESTION, name), s(AppStrings.Key.DELETE), () -> {
-         store.deleteProject(currentProjectDir);
-         files.clear();
-         activeIndex = -1;
+         File currentProjectDir = store.currentProjectDir();
+         boolean deletingCurrentProject = currentProjectDir != null && samePath(currentProjectDir, projectDir);
+         if (deletingCurrentProject) {
+            flushAutosave();
+         }
+         store.deleteProject(projectDir);
+         if (deletingCurrentProject) {
+            File nextProjectDir = store.currentProjectDir();
+            if (nextProjectDir != null) {
+               openInternalProject(nextProjectDir, false);
+               addConsoleEntry(LOG_INFO, sf(AppStrings.Key.DELETED, name));
+               return;
+            }
+            files.clear();
+            activeIndex = -1;
+         }
          fileRoot = DocumentFile.fromFile(store.sketchbookDir());
-         selectedFolder = fileRoot;
+         selectedFolder = deletingCurrentProject && store.currentProjectDir() != null
+            ? DocumentFile.fromFile(store.currentProjectDir())
+            : (store.sketchesDir() == null ? fileRoot : DocumentFile.fromFile(store.sketchesDir()));
          expandedFolders.clear();
          if (fileRoot != null) {
             expandedFolders.add(fileKey(fileRoot));
          }
-         syncEditorState();
-         rebuildTabs();
-         updateProjectTitle();
+         expandedFolders.add(SECTION_SKETCHES);
+         if (deletingCurrentProject) {
+            syncEditorState();
+            rebuildTabs();
+            updateProjectTitle();
+            store.save(files, activeIndex);
+         }
          renderFileTree();
-         store.save(files, activeIndex);
          addConsoleEntry(LOG_INFO, sf(AppStrings.Key.DELETED, name));
       });
    }
@@ -1883,6 +2833,329 @@ public final class MainActivity extends ComponentActivity {
       startActivity(intent);
    }
 
+   private void showFindReplaceDialog() {
+      if (editor == null || activeIndex < 0 || activeIndex >= files.size()) {
+         addConsoleEntry(LOG_ERROR, s(AppStrings.Key.NO_EDITOR_AVAILABLE));
+         activeConsoleTab = LOG_ERROR;
+         renderConsole();
+         return;
+      }
+
+      Dialog dialog = new Dialog(this);
+      dialog.setCanceledOnTouchOutside(true);
+      FindSession session = new FindSession();
+
+      LinearLayout content = new LinearLayout(this);
+      content.setOrientation(LinearLayout.VERTICAL);
+      content.setPadding(dp(12), dp(10), dp(12), dp(10));
+      UiStyles.roundedStroke(content, theme.surface, theme.border, dp(1), dp(12));
+
+      LinearLayout header = new LinearLayout(this);
+      header.setGravity(Gravity.CENTER_VERTICAL);
+      TextView titleView = new TextView(this);
+      titleView.setText(s(AppStrings.Key.FIND_REPLACE));
+      titleView.setTextColor(theme.text);
+      titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+      titleView.setTypeface(Typeface.DEFAULT_BOLD);
+      header.addView(titleView, new LinearLayout.LayoutParams(0, dp(32), 1f));
+      TextView more = dialogButton(s(AppStrings.Key.MORE), false);
+      header.addView(more, new LinearLayout.LayoutParams(dp(84), dp(34)));
+      content.addView(header, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(34)));
+
+      EditText findInput = createFindReplaceInput(s(AppStrings.Key.FIND), selectedEditorTextForSearch());
+      LinearLayout.LayoutParams findParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40));
+      findParams.setMargins(0, dp(8), 0, dp(6));
+      content.addView(findInput, findParams);
+
+      EditText replaceInput = createFindReplaceInput(s(AppStrings.Key.REPLACE), "");
+      LinearLayout.LayoutParams replaceParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40));
+      replaceParams.setMargins(0, 0, 0, dp(8));
+      content.addView(replaceInput, replaceParams);
+
+      LinearLayout actions = new LinearLayout(this);
+      actions.setGravity(Gravity.CENTER_VERTICAL);
+      TextView find = dialogButton(s(AppStrings.Key.FIND), true);
+      TextView replace = dialogButton(s(AppStrings.Key.REPLACE), false);
+      TextView replaceAll = dialogButton(s(AppStrings.Key.REPLACE_ALL), false);
+      actions.addView(find, weightedActionParams(0));
+      actions.addView(replace, weightedActionParams(dp(6)));
+      actions.addView(replaceAll, weightedActionParams(dp(6)));
+      content.addView(actions, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40)));
+
+      TextView status = new TextView(this);
+      status.setTextColor(theme.textMuted);
+      status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+      status.setGravity(Gravity.CENTER_VERTICAL);
+      content.addView(status, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(24)));
+
+      LinearLayout advanced = new LinearLayout(this);
+      advanced.setGravity(Gravity.CENTER_VERTICAL);
+      advanced.setVisibility(View.GONE);
+      TextView previous = dialogButton(s(AppStrings.Key.PREVIOUS), false);
+      advanced.addView(previous, new LinearLayout.LayoutParams(dp(92), dp(38)));
+      CheckBox matchCase = new CheckBox(this);
+      matchCase.setText(s(AppStrings.Key.MATCH_CASE));
+      matchCase.setTextColor(theme.text);
+      matchCase.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+      matchCase.setPadding(dp(8), 0, 0, 0);
+      matchCase.setButtonTintList(new ColorStateList(
+         new int[][] {new int[] {android.R.attr.state_checked}, new int[] {}},
+         new int[] {theme.accent, theme.border}
+      ));
+      advanced.addView(matchCase, new LinearLayout.LayoutParams(0, dp(38), 1f));
+      content.addView(advanced, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40)));
+
+      TextWatcher watcher = new TextWatcher() {
+         @Override
+         public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+         }
+
+         @Override
+         public void onTextChanged(CharSequence s, int start, int before, int count) {
+         }
+
+         @Override
+         public void afterTextChanged(Editable editable) {
+            refreshFindSession(session, findInput.getText().toString(), matchCase.isChecked(), status, true);
+         }
+      };
+      findInput.addTextChangedListener(watcher);
+      matchCase.setOnCheckedChangeListener((buttonView, isChecked) ->
+         refreshFindSession(session, findInput.getText().toString(), isChecked, status, true));
+
+      more.setOnClickListener(view -> {
+         boolean showAdvanced = advanced.getVisibility() != View.VISIBLE;
+         advanced.setVisibility(showAdvanced ? View.VISIBLE : View.GONE);
+         more.setText(s(showAdvanced ? AppStrings.Key.LESS : AppStrings.Key.MORE));
+      });
+      previous.setOnClickListener(view -> moveFindSelection(session, findInput.getText().toString(), matchCase.isChecked(), status, false));
+      find.setOnClickListener(view -> moveFindSelection(session, findInput.getText().toString(), matchCase.isChecked(), status, true));
+      replace.setOnClickListener(view -> replaceCurrentFindMatch(session, findInput.getText().toString(), replaceInput.getText().toString(), matchCase.isChecked(), status));
+      replaceAll.setOnClickListener(view -> replaceAllFindMatches(session, findInput.getText().toString(), replaceInput.getText().toString(), matchCase.isChecked(), status));
+
+      int width = Math.min(dp(330), getResources().getDisplayMetrics().widthPixels - dp(28));
+      dialog.setContentView(content, new ViewGroup.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT));
+      dialog.show();
+      if (dialog.getWindow() != null) {
+         dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+         dialog.getWindow().setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+         android.view.WindowManager.LayoutParams attributes = dialog.getWindow().getAttributes();
+         attributes.y = systemTopInset + dp(18);
+         dialog.getWindow().setAttributes(attributes);
+      }
+      findInput.requestFocus();
+      findInput.selectAll();
+      refreshFindSession(session, findInput.getText().toString(), matchCase.isChecked(), status, true);
+   }
+
+   private EditText createFindReplaceInput(String hint, String value) {
+      EditText input = new EditText(this);
+      input.setSingleLine(true);
+      input.setTextColor(theme.text);
+      input.setHintTextColor(theme.textMuted);
+      input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+      input.setTypeface(AppFonts.code(this));
+      input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+      input.setHint(hint);
+      input.setText(value);
+      input.setSelectAllOnFocus(true);
+      input.setPadding(dp(10), 0, dp(10), 0);
+      UiStyles.roundedStroke(input, theme.surfaceSoft, theme.border, dp(1), dp(8));
+      return input;
+   }
+
+   private LinearLayout.LayoutParams weightedActionParams(int leftMargin) {
+      LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(40), 1f);
+      params.setMargins(leftMargin, 0, 0, 0);
+      return params;
+   }
+
+   private String selectedEditorTextForSearch() {
+      if (editor == null || !editor.hasSelection()) {
+         return "";
+      }
+      int start = Math.max(0, Math.min(editor.getSelectionStart(), editor.getSelectionEnd()));
+      int end = Math.max(0, Math.max(editor.getSelectionStart(), editor.getSelectionEnd()));
+      String selected = editor.code().substring(start, Math.min(end, editor.code().length()));
+      return selected.indexOf('\n') >= 0 || selected.indexOf('\r') >= 0 ? "" : selected;
+   }
+
+   private void refreshFindSession(FindSession session, String query, boolean matchCase, TextView status, boolean selectWhenAvailable) {
+      session.matches = findMatches(editor.code(), query, matchCase);
+      if (query == null || query.isEmpty()) {
+         session.index = -1;
+         status.setText(s(AppStrings.Key.SEARCH_FIELD_EMPTY));
+         return;
+      }
+      if (session.matches.isEmpty()) {
+         session.index = -1;
+         status.setText(s(AppStrings.Key.NO_MATCHES_FOUND));
+         return;
+      }
+
+      int selectedIndex = selectedFindIndex(session.matches);
+      session.index = selectedIndex >= 0 ? selectedIndex : Math.max(0, Math.min(session.index, session.matches.size() - 1));
+      if (selectedIndex < 0 && selectWhenAvailable) {
+         session.index = 0;
+         selectFindMatch(session.matches.get(session.index));
+      }
+      status.setText(sf(AppStrings.Key.FIND_MATCH_COUNT, session.index + 1, session.matches.size()));
+   }
+
+   private void moveFindSelection(FindSession session, String query, boolean matchCase, TextView status, boolean forward) {
+      session.matches = findMatches(editor.code(), query, matchCase);
+      if (query == null || query.isEmpty()) {
+         session.index = -1;
+         status.setText(s(AppStrings.Key.SEARCH_FIELD_EMPTY));
+         return;
+      }
+      if (session.matches.isEmpty()) {
+         session.index = -1;
+         status.setText(s(AppStrings.Key.NO_MATCHES_FOUND));
+         return;
+      }
+
+      int selectedIndex = selectedFindIndex(session.matches);
+      int anchor = forward
+         ? Math.max(editor.getSelectionStart(), editor.getSelectionEnd())
+         : Math.min(editor.getSelectionStart(), editor.getSelectionEnd());
+      if (selectedIndex >= 0) {
+         FindMatch selected = session.matches.get(selectedIndex);
+         anchor = forward ? selected.end : selected.start;
+      }
+
+      session.index = forward ? firstMatchAtOrAfter(session.matches, anchor) : lastMatchBefore(session.matches, anchor);
+      selectFindMatch(session.matches.get(session.index));
+      status.setText(sf(AppStrings.Key.FIND_MATCH_COUNT, session.index + 1, session.matches.size()));
+   }
+
+   private void replaceCurrentFindMatch(FindSession session, String query, String replacement, boolean matchCase, TextView status) {
+      session.matches = findMatches(editor.code(), query, matchCase);
+      if (query == null || query.isEmpty()) {
+         session.index = -1;
+         status.setText(s(AppStrings.Key.SEARCH_FIELD_EMPTY));
+         return;
+      }
+      if (session.matches.isEmpty()) {
+         session.index = -1;
+         status.setText(s(AppStrings.Key.NO_MATCHES_FOUND));
+         return;
+      }
+
+      int selectedIndex = selectedFindIndex(session.matches);
+      if (selectedIndex < 0) {
+         moveFindSelection(session, query, matchCase, status, true);
+         return;
+      }
+
+      FindMatch match = session.matches.get(selectedIndex);
+      String code = editor.code();
+      String edited = code.substring(0, match.start) + replacement + code.substring(match.end);
+      int nextAnchor = match.start + replacement.length();
+      if (editor.applyEditedCode(edited, nextAnchor)) {
+         files.get(activeIndex).code = editor.code();
+         store.save(files, activeIndex);
+      }
+
+      session.matches = findMatches(editor.code(), query, matchCase);
+      if (session.matches.isEmpty()) {
+         session.index = -1;
+         status.setText(s(AppStrings.Key.NO_MATCHES_FOUND));
+         return;
+      }
+      session.index = firstMatchAtOrAfter(session.matches, nextAnchor);
+      selectFindMatch(session.matches.get(session.index));
+      status.setText(sf(AppStrings.Key.FIND_MATCH_COUNT, session.index + 1, session.matches.size()));
+   }
+
+   private void replaceAllFindMatches(FindSession session, String query, String replacement, boolean matchCase, TextView status) {
+      List<FindMatch> matches = findMatches(editor.code(), query, matchCase);
+      if (query == null || query.isEmpty()) {
+         session.index = -1;
+         status.setText(s(AppStrings.Key.SEARCH_FIELD_EMPTY));
+         return;
+      }
+      if (matches.isEmpty()) {
+         session.index = -1;
+         status.setText(s(AppStrings.Key.NO_MATCHES_FOUND));
+         return;
+      }
+
+      String code = editor.code();
+      StringBuilder edited = new StringBuilder(code.length() + Math.max(0, replacement.length() - query.length()) * matches.size());
+      int cursor = 0;
+      for (FindMatch match : matches) {
+         edited.append(code, cursor, match.start);
+         edited.append(replacement);
+         cursor = match.end;
+      }
+      edited.append(code, cursor, code.length());
+
+      int selection = Math.min(edited.length(), matches.get(0).start + replacement.length());
+      if (editor.applyEditedCode(edited.toString(), selection)) {
+         files.get(activeIndex).code = editor.code();
+         store.save(files, activeIndex);
+      }
+      addConsoleEntry(LOG_INFO, sf(AppStrings.Key.REPLACED_OCCURRENCES, matches.size()));
+      refreshFindSession(session, query, matchCase, status, true);
+   }
+
+   private List<FindMatch> findMatches(String code, String query, boolean matchCase) {
+      List<FindMatch> matches = new ArrayList<>();
+      if (code == null || query == null || query.isEmpty() || query.length() > code.length()) {
+         return matches;
+      }
+      int index = 0;
+      while (index <= code.length() - query.length()) {
+         if (code.regionMatches(!matchCase, index, query, 0, query.length())) {
+            matches.add(new FindMatch(index, index + query.length()));
+            index += query.length();
+         } else {
+            index++;
+         }
+      }
+      return matches;
+   }
+
+   private int selectedFindIndex(List<FindMatch> matches) {
+      int start = Math.min(editor.getSelectionStart(), editor.getSelectionEnd());
+      int end = Math.max(editor.getSelectionStart(), editor.getSelectionEnd());
+      for (int i = 0; i < matches.size(); i++) {
+         FindMatch match = matches.get(i);
+         if (match.start == start && match.end == end) {
+            return i;
+         }
+      }
+      return -1;
+   }
+
+   private int firstMatchAtOrAfter(List<FindMatch> matches, int anchor) {
+      for (int i = 0; i < matches.size(); i++) {
+         if (matches.get(i).start >= anchor) {
+            return i;
+         }
+      }
+      return 0;
+   }
+
+   private int lastMatchBefore(List<FindMatch> matches, int anchor) {
+      for (int i = matches.size() - 1; i >= 0; i--) {
+         if (matches.get(i).start < anchor) {
+            return i;
+         }
+      }
+      return matches.size() - 1;
+   }
+
+   private void selectFindMatch(FindMatch match) {
+      editor.setSelection(match.start, match.end);
+      editor.setCursorVisible(true);
+      editor.post(() -> {
+         editor.bringPointIntoView(match.start);
+         editor.bringPointIntoView(match.end);
+      });
+   }
+
    private void showColorSelectorDialog() {
       Dialog dialog = new Dialog(this);
       dialog.getWindow();
@@ -1907,13 +3180,13 @@ public final class MainActivity extends ComponentActivity {
       LinearLayout.LayoutParams pickerRowParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(220));
       pickerRowParams.setMargins(0, dp(12), 0, dp(14));
 
-      ColorFieldView colorField = new ColorFieldView(this);
+      ColorFieldView colorField = new ColorFieldView(this, theme);
       colorField.setHue(hsv[0]);
       colorField.setSelection(hsv[1], hsv[2]);
       LinearLayout.LayoutParams fieldParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f);
       pickerRow.addView(colorField, fieldParams);
 
-      HueSliderView hueSlider = new HueSliderView(this);
+      HueSliderView hueSlider = new HueSliderView(this, theme);
       hueSlider.setHue(hsv[0]);
       LinearLayout.LayoutParams sliderParams = new LinearLayout.LayoutParams(dp(30), LinearLayout.LayoutParams.MATCH_PARENT);
       sliderParams.setMargins(dp(12), 0, 0, 0);
@@ -1963,47 +3236,72 @@ public final class MainActivity extends ComponentActivity {
       hexValueParams.setMargins(dp(8), 0, dp(8), 0);
       hexRow.addView(hexValue, hexValueParams);
 
-      TextView copy = new TextView(this);
-      copy.setText(s(AppStrings.Key.COPY));
-      copy.setTextColor(theme.background);
-      copy.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-      copy.setGravity(Gravity.CENTER);
+      ImageButton copy = new ImageButton(this);
+      copy.setImageResource(R.drawable.copy_24);
+      copy.setColorFilter(theme.background);
+      copy.setContentDescription(s(AppStrings.Key.COPY));
+      copy.setPadding(dp(7), dp(7), dp(7), dp(7));
+      copy.setScaleType(ImageButton.ScaleType.CENTER);
       UiStyles.roundedStroke(copy, theme.accent, theme.accent, dp(1), dp(8));
       copy.setOnClickListener(view -> copyPlainText("HEX", hexValue.getText().toString()));
-      hexRow.addView(copy, new LinearLayout.LayoutParams(dp(60), dp(32)));
+      hexRow.addView(copy, new LinearLayout.LayoutParams(dp(38), dp(38)));
       content.addView(hexRow, hexRowParams);
 
-      Runnable syncFromHsv = () -> {
-         updating[0] = true;
-         int color = Color.HSVToColor(hsv);
-         int red = Color.red(color);
-         int green = Color.green(color);
-         int blue = Color.blue(color);
-         redInput.setText(String.valueOf(red));
-         greenInput.setText(String.valueOf(green));
-         blueInput.setText(String.valueOf(blue));
-         hueInput.setText(String.valueOf(Math.round(hsv[0])));
-         saturationInput.setText(String.valueOf(Math.round(hsv[1] * 100f)));
-         brightnessInput.setText(String.valueOf(Math.round(hsv[2] * 100f)));
-         hexValue.setText(String.format(Locale.US, "#%02X%02X%02X", red, green, blue));
-         colorField.setHue(hsv[0]);
-         colorField.setSelection(hsv[1], hsv[2]);
-         hueSlider.setHue(hsv[0]);
-         applyColorValueFieldStyle(hexValue, color);
-         updating[0] = false;
-      };
+      class ColorSync {
+         void sync(EditText skippedInput) {
+            updating[0] = true;
+            int color = Color.HSVToColor(hsv);
+            int red = Color.red(color);
+            int green = Color.green(color);
+            int blue = Color.blue(color);
+            setChannelText(redInput, String.valueOf(red), skippedInput);
+            setChannelText(greenInput, String.valueOf(green), skippedInput);
+            setChannelText(blueInput, String.valueOf(blue), skippedInput);
+            setChannelText(hueInput, String.valueOf(Math.round(hsv[0])), skippedInput);
+            setChannelText(saturationInput, String.valueOf(Math.round(hsv[1] * 100f)), skippedInput);
+            setChannelText(brightnessInput, String.valueOf(Math.round(hsv[2] * 100f)), skippedInput);
+            hexValue.setText(String.format(Locale.US, "#%02X%02X%02X", red, green, blue));
+            colorField.setHue(hsv[0]);
+            colorField.setSelection(hsv[1], hsv[2]);
+            hueSlider.setHue(hsv[0]);
+            applyColorValueFieldStyle(hexValue, color);
+            updating[0] = false;
+         }
+
+         private void setChannelText(EditText input, String value, EditText skippedInput) {
+            if (input == skippedInput && input.hasFocus()) {
+               return;
+            }
+            if (TextUtils.equals(input.getText(), value)) {
+               return;
+            }
+            input.setText(value);
+            if (input.hasFocus()) {
+               input.setSelection(input.getText().length());
+            }
+         }
+      }
+      ColorSync colorSync = new ColorSync();
 
       colorField.setListener((saturation, value) -> {
          hsv[1] = saturation;
          hsv[2] = value;
-         syncFromHsv.run();
+         colorSync.sync(null);
       });
       hueSlider.setListener(hue -> {
          hsv[0] = hue;
-         syncFromHsv.run();
+         colorSync.sync(null);
       });
 
-      TextWatcher rgbWatcher = new TextWatcher() {
+      class ColorChannelWatcher implements TextWatcher {
+         private final EditText source;
+         private final boolean rgb;
+
+         ColorChannelWatcher(EditText source, boolean rgb) {
+            this.source = source;
+            this.rgb = rgb;
+         }
+
          @Override
          public void beforeTextChanged(CharSequence s, int start, int count, int after) {
          }
@@ -2017,42 +3315,39 @@ public final class MainActivity extends ComponentActivity {
             if (updating[0]) {
                return;
             }
-            int red = parseColorChannel(redInput.getText().toString());
-            int green = parseColorChannel(greenInput.getText().toString());
-            int blue = parseColorChannel(blueInput.getText().toString());
-            Color.RGBToHSV(red, green, blue, hsv);
-            syncFromHsv.run();
-         }
-      };
-      redInput.addTextChangedListener(rgbWatcher);
-      greenInput.addTextChangedListener(rgbWatcher);
-      blueInput.addTextChangedListener(rgbWatcher);
-
-      TextWatcher hsbWatcher = new TextWatcher() {
-         @Override
-         public void beforeTextChanged(CharSequence s, int start, int count, int after) {
-         }
-
-         @Override
-         public void onTextChanged(CharSequence s, int start, int before, int count) {
-         }
-
-         @Override
-         public void afterTextChanged(Editable editable) {
-            if (updating[0]) {
-               return;
+            if (rgb) {
+               int red = parseColorChannel(redInput.getText().toString());
+               int green = parseColorChannel(greenInput.getText().toString());
+               int blue = parseColorChannel(blueInput.getText().toString());
+               Color.RGBToHSV(red, green, blue, hsv);
+            } else {
+               hsv[0] = parseHueChannel(hueInput.getText().toString());
+               hsv[1] = parsePercentChannel(saturationInput.getText().toString());
+               hsv[2] = parsePercentChannel(brightnessInput.getText().toString());
             }
-            hsv[0] = parseHueChannel(hueInput.getText().toString());
-            hsv[1] = parsePercentChannel(saturationInput.getText().toString());
-            hsv[2] = parsePercentChannel(brightnessInput.getText().toString());
-            syncFromHsv.run();
+            colorSync.sync(source);
+         }
+      }
+      redInput.addTextChangedListener(new ColorChannelWatcher(redInput, true));
+      greenInput.addTextChangedListener(new ColorChannelWatcher(greenInput, true));
+      blueInput.addTextChangedListener(new ColorChannelWatcher(blueInput, true));
+      hueInput.addTextChangedListener(new ColorChannelWatcher(hueInput, false));
+      saturationInput.addTextChangedListener(new ColorChannelWatcher(saturationInput, false));
+      brightnessInput.addTextChangedListener(new ColorChannelWatcher(brightnessInput, false));
+
+      View.OnFocusChangeListener normalizeOnBlur = (view, hasFocus) -> {
+         if (!hasFocus && !updating[0]) {
+            colorSync.sync(null);
          }
       };
-      hueInput.addTextChangedListener(hsbWatcher);
-      saturationInput.addTextChangedListener(hsbWatcher);
-      brightnessInput.addTextChangedListener(hsbWatcher);
+      redInput.setOnFocusChangeListener(normalizeOnBlur);
+      greenInput.setOnFocusChangeListener(normalizeOnBlur);
+      blueInput.setOnFocusChangeListener(normalizeOnBlur);
+      hueInput.setOnFocusChangeListener(normalizeOnBlur);
+      saturationInput.setOnFocusChangeListener(normalizeOnBlur);
+      brightnessInput.setOnFocusChangeListener(normalizeOnBlur);
 
-      syncFromHsv.run();
+      colorSync.sync(null);
 
       LinearLayout actions = new LinearLayout(this);
       actions.setGravity(Gravity.CENTER_VERTICAL | Gravity.RIGHT);
@@ -2103,7 +3398,8 @@ public final class MainActivity extends ComponentActivity {
       input.setTypeface(AppFonts.code(this));
       input.setInputType(InputType.TYPE_CLASS_NUMBER);
       input.setHint(hint);
-      input.setGravity(Gravity.CENTER);
+      input.setGravity(Gravity.CENTER_VERTICAL);
+      input.setPadding(dp(10), 0, dp(10), 0);
       UiStyles.roundedStroke(input, theme.surfaceSoft, theme.border, dp(1), dp(10));
       return input;
    }
@@ -2183,10 +3479,10 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void showTabMenu(View anchor) {
-      showContextMenu(anchor, dp(180),
-         new ContextMenuItem(s(AppStrings.Key.NEW_TAB), this::addTab),
-         new ContextMenuItem(s(AppStrings.Key.RENAME_TAB), this::showRenameTabDialog),
-         new ContextMenuItem(s(AppStrings.Key.DELETE_TAB), this::removeTab)
+      showContextMenu(anchor, dp(268),
+         new ContextMenuItem(s(AppStrings.Key.NEW_TAB), R.drawable.context_menu_note_add_24, this::addTab),
+         new ContextMenuItem(s(AppStrings.Key.RENAME), R.drawable.context_menu_edit_24, this::showRenameTabDialog),
+         ContextMenuItem.destructive(s(AppStrings.Key.DELETE_TAB), R.drawable.context_menu_delete_24, this::removeTab)
       );
    }
 
@@ -2195,6 +3491,10 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void showTextInputDialog(String title, String hint, String value, String confirmLabel, TextInputAction action) {
+      showTextInputDialog(title, hint, value, confirmLabel, false, action);
+   }
+
+   private void showTextInputDialog(String title, String hint, String value, String confirmLabel, boolean replaceSpacesWithUnderscores, TextInputAction action) {
       Dialog dialog = new Dialog(this);
       dialog.getWindow();
 
@@ -2220,6 +3520,9 @@ public final class MainActivity extends ComponentActivity {
       input.setSelectAllOnFocus(true);
       input.setPadding(dp(12), 0, dp(12), 0);
       UiStyles.roundedStroke(input, theme.surfaceSoft, theme.border, dp(1), dp(10));
+      if (replaceSpacesWithUnderscores) {
+         installSpaceToUnderscoreFilter(input);
+      }
       LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46));
       inputParams.setMargins(0, dp(12), 0, dp(14));
       content.addView(input, inputParams);
@@ -2251,6 +3554,38 @@ public final class MainActivity extends ComponentActivity {
       }
       dialog.show();
       input.requestFocus();
+   }
+
+   private void installSpaceToUnderscoreFilter(EditText input) {
+      final boolean[] updating = {false};
+      TextWatcher watcher = new TextWatcher() {
+         @Override
+         public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+         }
+
+         @Override
+         public void onTextChanged(CharSequence s, int start, int before, int count) {
+         }
+
+         @Override
+         public void afterTextChanged(Editable editable) {
+            if (updating[0]) {
+               return;
+            }
+            String text = editable.toString();
+            String normalized = text.replace(' ', '_');
+            if (text.equals(normalized)) {
+               return;
+            }
+            int cursor = input.getSelectionStart();
+            updating[0] = true;
+            input.setText(normalized);
+            input.setSelection(Math.max(0, Math.min(cursor, normalized.length())));
+            updating[0] = false;
+         }
+      };
+      input.addTextChangedListener(watcher);
+      watcher.afterTextChanged(input.getText());
    }
 
    private void showConfirmationDialog(String title, String message, String confirmLabel, Runnable action) {
@@ -2322,13 +3657,31 @@ public final class MainActivity extends ComponentActivity {
       popup.setElevation(dp(10));
 
       for (ContextMenuItem item : items) {
-         TextView row = new TextView(this);
-         row.setText(item.title);
-         row.setTextColor(theme.text);
-         row.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+         LinearLayout row = new LinearLayout(this);
          row.setGravity(Gravity.CENTER_VERTICAL);
          row.setPadding(dp(12), 0, dp(12), 0);
          UiStyles.rounded(row, theme.surface, dp(8));
+
+         if (item.iconResource != 0) {
+            ImageView icon = new ImageView(this);
+            icon.setImageResource(item.iconResource);
+            icon.setColorFilter(item.destructive ? theme.error : theme.textMuted);
+            icon.setScaleType(ImageView.ScaleType.CENTER);
+            LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(24), dp(44));
+            iconParams.setMargins(0, 0, dp(8), 0);
+            row.addView(icon, iconParams);
+         }
+
+         TextView title = new TextView(this);
+         title.setText(item.title);
+         title.setTextColor(item.destructive ? theme.error : theme.text);
+         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+         title.setSingleLine(true);
+         title.setEllipsize(TextUtils.TruncateAt.END);
+         title.setGravity(Gravity.CENTER_VERTICAL);
+         title.setIncludeFontPadding(false);
+         row.addView(title, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f));
+
          row.setOnClickListener(view -> {
             popup.dismiss();
             item.action.run();
@@ -2338,7 +3691,32 @@ public final class MainActivity extends ComponentActivity {
          menu.addView(row, params);
       }
 
-      popup.showAsDropDown(anchor, 0, dp(6));
+      showContextPopup(anchor, popup, menu, width);
+   }
+
+   private void showContextPopup(View anchor, PopupWindow popup, View menu, int width) {
+      int gap = dp(6);
+      Rect visibleFrame = new Rect();
+      anchor.getWindowVisibleDisplayFrame(visibleFrame);
+      int[] anchorLocation = new int[2];
+      anchor.getLocationOnScreen(anchorLocation);
+
+      int widthSpec = View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY);
+      int heightSpec = View.MeasureSpec.makeMeasureSpec(visibleFrame.height(), View.MeasureSpec.AT_MOST);
+      menu.measure(widthSpec, heightSpec);
+
+      int menuHeight = menu.getMeasuredHeight();
+      int anchorBottom = anchorLocation[1] + anchor.getHeight();
+      int spaceBelow = visibleFrame.bottom - (anchorLocation[1] + anchor.getHeight()) - gap;
+      int spaceAbove = anchorLocation[1] - visibleFrame.top - gap;
+      int menuTop = spaceBelow >= menuHeight || spaceBelow >= spaceAbove
+         ? anchorBottom + gap
+         : anchorLocation[1] - menuHeight - gap;
+
+      int minimumTop = visibleFrame.top + gap;
+      int maximumTop = Math.max(minimumTop, visibleFrame.bottom - menuHeight - gap);
+      menuTop = Math.max(minimumTop, Math.min(menuTop, maximumTop));
+      popup.showAsDropDown(anchor, 0, menuTop - anchorBottom);
    }
 
    private void showRenameTabDialog() {
@@ -2364,6 +3742,16 @@ public final class MainActivity extends ComponentActivity {
             }
             activeFile.documentUri = document.getUri().toString();
             renderFileTree();
+         } else if (!normalized.equalsIgnoreCase(activeFile.name)) {
+            persistCurrentFile();
+            if (!store.renameSketchFile(activeFile, normalized)) {
+               addConsoleEntry(LOG_ERROR, sf(AppStrings.Key.COULD_NOT_RENAME, activeFile.name));
+               activeConsoleTab = LOG_ERROR;
+               renderConsole();
+               return false;
+            }
+         } else {
+            activeFile.name = normalized;
          }
          files.get(activeIndex).name = normalized;
          addConsoleEntry(LOG_INFO, sf(AppStrings.Key.RENAMED_TAB_TO, normalized));
@@ -2375,7 +3763,7 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private String normalizeRenameFileName(String requestedName, String currentName) {
-      String name = requestedName == null ? "" : requestedName.trim();
+      String name = requestedName == null ? "" : requestedName.replace("/", "").replace("\\", "").trim();
       if (name.isEmpty()) {
          return "";
       }
@@ -2404,20 +3792,22 @@ public final class MainActivity extends ComponentActivity {
          consoleStartY = event.getRawY();
          consoleStartHeight = consolePanel.getHeight();
          userResizingConsole = true;
+         if (editor != null) {
+            editor.setExternalResize(true);
+            editor.setExternalResizeTracksOverlayBounds(true);
+         }
          return true;
       }
       if (event.getAction() == MotionEvent.ACTION_MOVE) {
          float delta = consoleStartY - event.getRawY();
-         int topLimit = dp(90);
-         if (rootView != null && rootView.getChildCount() > 0) {
-            topLimit = rootView.getChildAt(0).getBottom() + dp(6);
-         }
-         int maxHeight = Math.max(dp(180), consolePanel.getBottom() - topLimit);
-         setConsoleHeight(clamp(Math.round(consoleStartHeight + delta), collapsedConsoleHeight(), maxHeight));
+         scheduleConsoleHeight(clamp(Math.round(consoleStartHeight + delta), collapsedConsoleHeight(), maxConsoleHeight()));
          return true;
       }
       if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
+         flushPendingConsoleHeight();
          userResizingConsole = false;
+         updateEditorViewportForConsole();
+         if (editor != null) editor.setExternalResize(false);
          return true;
       }
       return false;
@@ -2434,30 +3824,65 @@ public final class MainActivity extends ComponentActivity {
    }
 
    private void setConsoleHeight(int height) {
+      if (consolePanel == null) return;
       boolean wasCollapsed = consoleCollapsed;
-      consoleHeight = height <= dp(72) ? collapsedConsoleHeight() : height;
-      consoleCollapsed = consoleHeight == collapsedConsoleHeight();
-      if (userResizingConsole && wasCollapsed != consoleCollapsed && consolePanel != null) {
+      int collapsed = collapsedConsoleHeight();
+      consoleHeight = height <= dp(72) ? collapsed : height;
+      consoleCollapsed = consoleHeight == collapsed;
+      if (userResizingConsole && wasCollapsed != consoleCollapsed) {
          performConsoleToggleFeedback();
       }
       if (!consoleCollapsed) {
          expandedConsoleHeight = consoleHeight;
       }
-      LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) consolePanel.getLayoutParams();
-      params.height = consoleHeight;
-      consolePanel.setLayoutParams(params);
+      applyConsoleHeightLayout();
+   }
+
+   private void scheduleConsoleHeight(int height) {
+      pendingConsoleHeight = height;
+      if (consoleHeightApplyScheduled || consolePanel == null) {
+         return;
+      }
+      consoleHeightApplyScheduled = true;
+      consolePanel.postOnAnimation(applyPendingConsoleHeightRunnable);
+   }
+
+   private void applyPendingConsoleHeight() {
+      consoleHeightApplyScheduled = false;
+      setConsoleHeight(pendingConsoleHeight);
+   }
+
+   private void flushPendingConsoleHeight() {
+      if (!consoleHeightApplyScheduled || consolePanel == null) {
+         return;
+      }
+      consolePanel.removeCallbacks(applyPendingConsoleHeightRunnable);
+      consoleHeightApplyScheduled = false;
+      setConsoleHeight(pendingConsoleHeight);
+   }
+
+   private void applyConsoleHeightLayout() {
+      if (consolePanel == null) return;
+      ViewGroup.LayoutParams params = consolePanel.getLayoutParams();
+      if (params.height != consoleHeight) {
+         params.height = consoleHeight;
+         consolePanel.setLayoutParams(params);
+      }
+      updateEditorViewportForConsole();
       if (consoleHeader != null) {
          consoleHeader.setVisibility(consoleCollapsed ? View.GONE : View.VISIBLE);
       }
       if (consoleScroll != null) {
          consoleScroll.setVisibility(consoleCollapsed ? View.GONE : View.VISIBLE);
       }
-      if (lineNumbers != null) {
-         lineNumbers.postInvalidateOnAnimation();
+   }
+
+   private void updateEditorViewportForConsole() {
+      if (editor == null) {
+         return;
       }
-      if (consolePanel != null) {
-         consolePanel.post(this::updateConsoleForKeyboardInset);
-      }
+      int translatedConsoleOffset = Math.round(consoleImeRestoreOffset());
+      editor.setBottomOverlayInset(Math.max(0, consoleHeight + imeInset - translatedConsoleOffset));
    }
 
    private void collapseConsole() {
@@ -2466,74 +3891,23 @@ public final class MainActivity extends ComponentActivity {
       }
    }
 
-   private void collapseConsoleForKeyboard() {
-      if (consolePanel == null) {
-         restoreConsoleAfterKeyboard = false;
-         return;
-      }
-      if (consoleCollapsed) {
-         restoreConsoleAfterKeyboard = false;
-         setConsoleHeight(collapsedConsoleHeight());
-         return;
-      }
-      restoreConsoleAfterKeyboard = true;
-      consoleHeightBeforeKeyboard = consoleHeight;
-      collapseConsole();
-   }
-
-   private void restoreConsoleAfterKeyboard() {
-      if (!restoreConsoleAfterKeyboard || consolePanel == null) {
-         return;
-      }
-      restoreConsoleAfterKeyboard = false;
-      setConsoleHeight(Math.max(consoleHeightBeforeKeyboard, dp(180)));
-   }
-
-   private void updateConsoleForKeyboardInset() {
-      if (consolePanel == null) {
-         return;
-      }
-      if (!keyboardVisible || keyboardInsetHeight <= 0 || keyboardVisibleBottom <= 0) {
-         consolePanel.setTranslationY(0f);
-         return;
-      }
-      int[] location = new int[2];
-      consolePanel.getLocationOnScreen(location);
-      int consoleBottom = location[1] + consolePanel.getHeight();
-      int overlap = Math.max(0, consoleBottom - keyboardVisibleBottom);
-      consolePanel.setTranslationY(-overlap);
-   }
-
-   private void updateEditorForKeyboardInset() {
-      if (editor == null) {
-         return;
-      }
-      int bottomPadding = 0;
-      if (keyboardVisible && keyboardInsetHeight > 0) {
-         bottomPadding = keyboardInsetHeight + collapsedConsoleHeight() + dp(8);
-      }
-      editor.setPadding(dp(10), dp(2), 0, bottomPadding);
-      if (lineNumbers != null) {
-         lineNumbers.postInvalidateOnAnimation();
-      }
-   }
-
    private void performConsoleToggleFeedback() {
       if (consolePanel == null || settings == null || !settings.hapticEnabled()) {
-         return;
-      }
-      boolean performed = consolePanel.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK);
-      if (performed) {
          return;
       }
       Vibrator vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
       if (vibrator == null || !vibrator.hasVibrator()) {
          return;
       }
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-         vibrator.vibrate(VibrationEffect.createOneShot(18L, VibrationEffect.DEFAULT_AMPLITUDE));
-      } else {
-         vibrator.vibrate(18L);
+      try {
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK));
+         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createOneShot(18L, VibrationEffect.DEFAULT_AMPLITUDE));
+         } else {
+            vibrator.vibrate(18L);
+         }
+      } catch (SecurityException ignored) {
       }
    }
 
@@ -2543,26 +3917,325 @@ public final class MainActivity extends ComponentActivity {
       }
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
          getWindow().setStatusBarColor(theme.background);
-         getWindow().setNavigationBarColor(theme.background);
+         getWindow().setNavigationBarColor(theme.surface);
       }
    }
 
-   private void expandConsoleForError() {
-      if (consolePanel == null) {
+   private void animateThemeChange(String themeMode) {
+      EditorTheme from = theme;
+      EditorTheme to = EditorTheme.load(this, themeMode);
+      cancelThemeAnimation();
+      appliedThemeMode = themeMode;
+      themeAnimator = ValueAnimator.ofFloat(0f, 1f);
+      themeAnimator.setDuration(220L);
+      themeAnimator.addUpdateListener(animator -> {
+         float fraction = (Float) animator.getAnimatedValue();
+         applyAnimatedTheme(EditorTheme.interpolate(from, to, fraction), false);
+      });
+      final boolean[] canceled = {false};
+      themeAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
+         @Override
+         public void onAnimationEnd(android.animation.Animator animation) {
+            if (canceled[0]) {
+               return;
+            }
+            themeAnimator = null;
+            applyAnimatedTheme(to, true);
+         }
+
+         @Override
+         public void onAnimationCancel(android.animation.Animator animation) {
+            canceled[0] = true;
+            themeAnimator = null;
+         }
+      });
+      themeAnimator.start();
+   }
+
+   private void cancelThemeAnimation() {
+      if (themeAnimator != null) {
+         ValueAnimator animator = themeAnimator;
+         themeAnimator = null;
+         animator.cancel();
+      }
+   }
+
+   private void applyAnimatedTheme(EditorTheme nextTheme, boolean finalPass) {
+      EditorTheme previousTheme = theme;
+      theme = nextTheme;
+      applySystemBarColors();
+      if (rootView != null) {
+         rootView.setBackgroundColor(theme.background);
+      }
+      if (navigationBarBackground != null) {
+         navigationBarBackground.setBackgroundColor(theme.surface);
+      }
+      if (editorPanel != null) {
+         UiStyles.topRounded(editorPanel, theme.background, dp(14));
+      }
+      if (consolePanel != null) {
+         UiStyles.topRoundedSideStroke(consolePanel, theme.surface, theme.border, dp(1), dp(14));
+      }
+      if (consoleHandle != null) {
+         UiStyles.rounded(consoleHandle, theme.border, dp(3));
+      }
+      if (filePanelScrim != null) {
+         filePanelScrim.setBackgroundColor(theme.scrim);
+      }
+      if (filePanelContainer != null) {
+         UiStyles.roundedStroke(filePanelContainer, theme.surface, theme.border, dp(1), dp(14));
+      }
+      styleConsoleTab(consoleTab, activeConsoleTab == LOG_INFO);
+      styleConsoleTab(errorsTab, activeConsoleTab == LOG_ERROR);
+      updateFilePanelTitle();
+      applyThemeToTree(rootContainer, previousTheme, theme);
+      if (finalPass) {
+         rebuildTabs();
+         renderConsole();
+         renderFileTree();
+      }
+   }
+
+   private void applyThemeToTree(View view, EditorTheme previousTheme, EditorTheme nextTheme) {
+      if (view == null) {
          return;
       }
-      setConsoleHeight(Math.max(expandedConsoleHeight, dp(180)));
+      if (view instanceof ThemeAware) {
+         ((ThemeAware) view).applyTheme(nextTheme);
+      } else if (view instanceof TextView) {
+         remapTextColor((TextView) view, previousTheme, nextTheme);
+      }
+      remapBackgroundColor(view, previousTheme, nextTheme);
+      if (view instanceof ViewGroup) {
+         ViewGroup group = (ViewGroup) view;
+         for (int i = 0; i < group.getChildCount(); i++) {
+            applyThemeToTree(group.getChildAt(i), previousTheme, nextTheme);
+         }
+      }
+   }
+
+   private void remapTextColor(TextView textView, EditorTheme previousTheme, EditorTheme nextTheme) {
+      int current = textView.getCurrentTextColor();
+      int updated = remapThemeColor(current, previousTheme, nextTheme);
+      if (updated != current) {
+         textView.setTextColor(updated);
+      }
+      if (textView instanceof EditText) {
+         ((EditText) textView).setHintTextColor(remapThemeColor(textView.getHintTextColors().getDefaultColor(), previousTheme, nextTheme));
+      }
+   }
+
+   private void remapBackgroundColor(View view, EditorTheme previousTheme, EditorTheme nextTheme) {
+      if (UiStyles.remapThemeBackground(view, previousTheme, nextTheme)) {
+         return;
+      }
+      if (view.getBackground() instanceof ColorDrawable) {
+         ColorDrawable drawable = (ColorDrawable) view.getBackground();
+         int updated = remapThemeColor(drawable.getColor(), previousTheme, nextTheme);
+         if (updated != drawable.getColor()) {
+            drawable.setColor(updated);
+         }
+      } else if (view.getBackground() instanceof GradientDrawable) {
+         GradientDrawable drawable = (GradientDrawable) view.getBackground();
+         ColorStateList color = drawable.getColor();
+         if (color == null) {
+            return;
+         }
+         int current = color.getDefaultColor();
+         int updated = remapThemeColor(current, previousTheme, nextTheme);
+         if (updated != current) {
+            drawable.setColor(updated);
+         }
+      }
+   }
+
+   private int remapThemeColor(int color, EditorTheme previousTheme, EditorTheme nextTheme) {
+      if (color == previousTheme.text) return nextTheme.text;
+      if (color == previousTheme.textMuted) return nextTheme.textMuted;
+      if (color == previousTheme.accent) return nextTheme.accent;
+      if (color == previousTheme.background) return nextTheme.background;
+      if (color == previousTheme.surface) return nextTheme.surface;
+      if (color == previousTheme.surfaceSoft) return nextTheme.surfaceSoft;
+      if (color == previousTheme.border) return nextTheme.border;
+      if (sameRgb(color, previousTheme.border)) return withAlpha(nextTheme.border, Color.alpha(color));
+      if (color == previousTheme.codeAccent) return nextTheme.codeAccent;
+      if (color == previousTheme.error) return nextTheme.error;
+      if (color == previousTheme.play) return nextTheme.play;
+      if (color == previousTheme.stop) return nextTheme.stop;
+      return color;
+   }
+
+   private boolean sameRgb(int left, int right) {
+      return Color.red(left) == Color.red(right)
+         && Color.green(left) == Color.green(right)
+         && Color.blue(left) == Color.blue(right);
+   }
+
+   private int withAlpha(int color, int alpha) {
+      return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
+   }
+
+   private void expandConsoleForError() {
+      activeConsoleTab = LOG_ERROR;
+      if (consolePanel != null && consoleCollapsed) {
+         setConsoleHeight(runConsoleHeight());
+      }
+      renderConsole();
+      scrollConsoleToBottom();
+   }
+
+   private void openConsoleForRun() {
+      activeConsoleTab = LOG_INFO;
+      if (consolePanel != null && consoleCollapsed) {
+         setConsoleHeight(runConsoleHeight());
+      }
+      renderConsole();
       scrollConsoleToBottom();
    }
 
    private int collapsedConsoleHeight() {
-      return keyboardVisible ? dp(25) : dp(60);
+      return imeShown ? dp(28) : dp(40);
+   }
+
+   private int maxConsoleHeight() {
+      if (editorWorkspace == null || editorWorkspace.getHeight() <= 0) {
+         return dp(180);
+      }
+      int visibleWorkspaceHeight = Math.max(0, editorWorkspace.getHeight() - imeInset);
+      return Math.max(collapsedConsoleHeight(), visibleWorkspaceHeight - dp(90));
+   }
+
+   private int runConsoleHeight() {
+      int mediumRunHeight = rootView == null ? dp(250) : Math.round(rootView.getHeight() * 0.42f);
+      int targetHeight = Math.max(expandedConsoleHeight, Math.max(dp(240), mediumRunHeight));
+      return Math.min(targetHeight, maxConsoleHeight());
+   }
+
+   private void handleImeTransition(boolean appearing, int targetImeInset) {
+      beginImeTransition(appearing);
+      imeInset = targetImeInset;
+      applyContentPadding();
+      finishImeTransition();
+   }
+
+   private void beginImeTransition(boolean appearing) {
+      resetConsoleImeOffset();
+      imeTransitionAppearing = appearing;
+      imeShown = appearing;
+      if (editor != null) {
+         editor.setExternalResizeTracksOverlayBounds(!appearing);
+      }
+      if (consolePanel == null) {
+         return;
+      }
+      if (appearing) {
+         if (!consoleCollapsed) {
+            consoleHeightBeforeIme = consoleHeight;
+            consoleCollapsedByIme = true;
+         }
+         setConsoleHeight(collapsedConsoleHeight());
+      } else {
+         int startHeight = consoleHeight;
+         int targetHeight = consoleCollapsedByIme
+            ? Math.max(consoleHeightBeforeIme, dp(180))
+            : collapsedConsoleHeight();
+         // Restore the layout height now, but keep its top edge on the IME path until the inset reaches zero.
+         consoleImeRestoreStartInset = Math.max(0, imeInset);
+         consoleImeRestoreHeightDelta = targetHeight - startHeight;
+         setConsoleHeight(targetHeight);
+         applyImeOverlayOffset();
+      }
+   }
+
+   private void finishImeTransition() {
+      if (imeTransitionAppearing) {
+         return;
+      }
+      int targetHeight = consoleCollapsedByIme
+         ? Math.max(consoleHeightBeforeIme, dp(180))
+         : collapsedConsoleHeight();
+      consoleCollapsedByIme = false;
+      imeInset = 0;
+      resetConsoleImeOffset();
+      setConsoleHeight(targetHeight);
+      applyContentPadding();
+   }
+
+   private void resetConsoleImeOffset() {
+      consoleImeRestoreStartInset = 0;
+      consoleImeRestoreHeightDelta = 0;
+      if (consolePanel != null) {
+         consolePanel.setTranslationY(0f);
+      }
    }
 
    private void addConsoleEntry(int type, String message) {
       consoleEntries.add(new ConsoleEntry(type, message));
+      trimConsoleEntries();
       renderConsole();
       scrollConsoleToBottom();
+   }
+
+   private void queuePreviewConsoleOutput(String output) {
+      if (output == null || output.isEmpty()) {
+         return;
+      }
+      pendingPreviewConsoleOutput.add(output);
+      if (pendingPreviewConsoleOutput.size() > MAX_CONSOLE_ENTRIES) {
+         pendingPreviewConsoleOutput.remove(0);
+      }
+      if (!previewConsoleFlushScheduled) {
+         previewConsoleFlushScheduled = true;
+         runHandler.postDelayed(flushPreviewConsoleRunnable, PREVIEW_LOG_FLUSH_DELAY_MS);
+      }
+   }
+
+   private void flushPreviewConsoleEntries() {
+      runHandler.removeCallbacks(flushPreviewConsoleRunnable);
+      previewConsoleFlushScheduled = false;
+      if (pendingPreviewConsoleOutput.isEmpty()) {
+         return;
+      }
+      for (String output : pendingPreviewConsoleOutput) {
+         appendPreviewConsoleOutput(output);
+      }
+      pendingPreviewConsoleOutput.clear();
+      trimConsoleEntries();
+      renderConsole();
+      scrollConsoleToBottom();
+   }
+
+   private void appendPreviewConsoleOutput(String output) {
+      int start = 0;
+      for (int i = 0; i < output.length(); i++) {
+         char ch = output.charAt(i);
+         if (ch == '\n') {
+            appendPreviewConsoleSegment(output.substring(start, i).replace("\r", ""));
+            openPreviewConsoleEntry = null;
+            start = i + 1;
+         }
+      }
+      if (start < output.length()) {
+         appendPreviewConsoleSegment(output.substring(start).replace("\r", ""));
+      }
+   }
+
+   private void appendPreviewConsoleSegment(String segment) {
+      if (openPreviewConsoleEntry == null) {
+         openPreviewConsoleEntry = new ConsoleEntry(LOG_CONSOLE, "");
+         consoleEntries.add(openPreviewConsoleEntry);
+      }
+      openPreviewConsoleEntry.message += segment;
+   }
+
+   private void trimConsoleEntries() {
+      int overflow = consoleEntries.size() - MAX_CONSOLE_ENTRIES;
+      if (overflow > 0) {
+         consoleEntries.subList(0, overflow).clear();
+         if (openPreviewConsoleEntry != null && !consoleEntries.contains(openPreviewConsoleEntry)) {
+            openPreviewConsoleEntry = null;
+         }
+      }
    }
 
    private void renderConsole() {
@@ -2732,43 +4405,6 @@ public final class MainActivity extends ComponentActivity {
       }
    }
 
-   private void installKeyboardWatcher(View root) {
-      root.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
-         @Override
-         public void onGlobalLayout() {
-            Rect visibleFrame = new Rect();
-            root.getWindowVisibleDisplayFrame(visibleFrame);
-            int rootViewHeight = root.getRootView().getHeight();
-            int hiddenHeight = Math.max(0, rootViewHeight - visibleFrame.bottom);
-            boolean nowVisible = hiddenHeight > dp(140);
-            keyboardInsetHeight = nowVisible ? hiddenHeight : 0;
-            keyboardVisibleBottom = nowVisible ? visibleFrame.bottom : 0;
-            if (nowVisible && !keyboardVisible) {
-               keyboardVisible = true;
-               collapseConsoleForKeyboard();
-            } else if (!nowVisible && keyboardVisible) {
-               keyboardVisible = false;
-               keyboardInsetHeight = 0;
-               keyboardVisibleBottom = 0;
-               if (restoreConsoleAfterKeyboard) {
-                  restoreConsoleAfterKeyboard();
-               } else if (consolePanel != null && consoleHeight <= dp(72)) {
-                  setConsoleHeight(collapsedConsoleHeight());
-               }
-            } else {
-               keyboardVisible = nowVisible;
-               if (!nowVisible) {
-                  keyboardInsetHeight = 0;
-                  keyboardVisibleBottom = 0;
-               }
-            }
-            updateEditorForKeyboardInset();
-            updateConsoleForKeyboardInset();
-            root.setPadding(0, root.getPaddingTop(), 0, 0);
-         }
-      });
-   }
-
    private LinearLayout.LayoutParams iconParams() {
       return new LinearLayout.LayoutParams(dp(48), dp(48));
    }
@@ -2793,7 +4429,7 @@ public final class MainActivity extends ComponentActivity {
 
    private static final class ConsoleEntry {
       final int type;
-      final String message;
+      String message;
 
       ConsoleEntry(int type, String message) {
          this.type = type;
@@ -2807,6 +4443,9 @@ public final class MainActivity extends ComponentActivity {
          if (type == LOG_ERROR) {
             return ConsoleStatusIconView.MODE_ERROR;
          }
+         if (type == LOG_CONSOLE) {
+            return ConsoleStatusIconView.MODE_TERMINAL;
+         }
          return ConsoleStatusIconView.MODE_INFO;
       }
 
@@ -2816,6 +4455,9 @@ public final class MainActivity extends ComponentActivity {
          }
          if (type == LOG_ERROR) {
             return theme.error;
+         }
+         if (type == LOG_CONSOLE) {
+            return theme.play;
          }
          return theme.codeAccent;
       }
@@ -2827,11 +4469,42 @@ public final class MainActivity extends ComponentActivity {
 
    private static final class ContextMenuItem {
       final String title;
+      final int iconResource;
+      final boolean destructive;
       final Runnable action;
 
       ContextMenuItem(String title, Runnable action) {
+         this(title, 0, false, action);
+      }
+
+      ContextMenuItem(String title, int iconResource, Runnable action) {
+         this(title, iconResource, false, action);
+      }
+
+      private ContextMenuItem(String title, int iconResource, boolean destructive, Runnable action) {
          this.title = title;
+         this.iconResource = iconResource;
+         this.destructive = destructive;
          this.action = action;
+      }
+
+      static ContextMenuItem destructive(String title, int iconResource, Runnable action) {
+         return new ContextMenuItem(title, iconResource, true, action);
+      }
+   }
+
+   private static final class FindSession {
+      List<FindMatch> matches = new ArrayList<>();
+      int index = -1;
+   }
+
+   private static final class FindMatch {
+      final int start;
+      final int end;
+
+      FindMatch(int start, int end) {
+         this.start = start;
+         this.end = end;
       }
    }
 

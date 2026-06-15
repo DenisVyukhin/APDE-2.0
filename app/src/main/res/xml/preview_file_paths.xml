@@ -1,0 +1,5 @@
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+   <cache-path name="sketch_preview_cache" path="sketch-preview/" />
+   <cache-path name="sketch_preview_installer" path="sketch-preview-installer/" />
+   <files-path name="sketch_preview_toolchains" path="toolchains/" />
+</paths>

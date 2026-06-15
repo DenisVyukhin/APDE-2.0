@@ -10,6 +10,7 @@ final class AppSettings {
    static final String LANGUAGE_RU = "ru";
    static final String THEME_DARK = "dark";
    static final String THEME_LIGHT = "light";
+   static final String THEME_APDE_LIGHT = "vscode_default_dark";
 
    private static final String PREFS = "apde2_settings";
    private static final String KEY_LANGUAGE = "language";

@@ -1,5 +1,12 @@
 package com.apde2;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.ValueAnimator;
+import android.content.res.ColorStateList;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Build;
 import android.text.InputFilter;
@@ -10,7 +17,9 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.EditText;
+import android.widget.GridLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
@@ -18,19 +27,28 @@ import android.widget.TextView;
 
 import androidx.activity.ComponentActivity;
 
+import java.util.List;
+
 public final class SettingsActivity extends ComponentActivity {
    private static final String STATE_SCROLL_Y = "scroll_y";
 
-   private final EditorTheme theme = EditorTheme.dark();
+   private EditorTheme theme;
    private AppSettings settings;
    private AppStrings strings;
    private ScrollView scrollView;
    private int restoredScrollY;
+   private String appliedThemeMode;
+   private ValueAnimator themeAnimator;
 
    @Override
    protected void onCreate(Bundle savedInstanceState) {
       super.onCreate(savedInstanceState);
       settings = new AppSettings(this);
+      appliedThemeMode = EditorTheme.resolveThemeId(this, settings.themeMode());
+      if (!appliedThemeMode.equals(settings.themeMode())) {
+         settings.setThemeMode(appliedThemeMode);
+      }
+      theme = EditorTheme.load(this, appliedThemeMode);
       strings = new AppStrings(settings.language());
       applySystemBarColors();
       restoredScrollY = savedInstanceState == null ? 0 : savedInstanceState.getInt(STATE_SCROLL_Y, 0);
@@ -53,6 +71,12 @@ public final class SettingsActivity extends ComponentActivity {
          outState.putInt(STATE_SCROLL_Y, scrollView.getScrollY());
       }
       super.onSaveInstanceState(outState);
+   }
+
+   @Override
+   protected void onDestroy() {
+      cancelThemeAnimation();
+      super.onDestroy();
    }
 
    private void buildUi() {
@@ -88,23 +112,23 @@ public final class SettingsActivity extends ComponentActivity {
       header.addView(title, titleParams);
       root.addView(header, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
-      root.addView(sectionTitle(s(AppStrings.Key.GENERAL)));
-      root.addView(choiceRow(s(AppStrings.Key.INTERFACE_LANGUAGE), settings.language(), s(AppStrings.Key.ENGLISH), AppSettings.LANGUAGE_EN, s(AppStrings.Key.RUSSIAN), AppSettings.LANGUAGE_RU, value -> {
-         settings.setLanguage(value);
-         recreate();
-      }));
-      root.addView(toggleRow(s(AppStrings.Key.HAPTIC_FEEDBACK), settings.hapticEnabled(), settings::setHapticEnabled));
+      addSection(root, s(AppStrings.Key.GENERAL),
+         choiceRow(s(AppStrings.Key.INTERFACE_LANGUAGE), settings.language(), s(AppStrings.Key.ENGLISH), AppSettings.LANGUAGE_EN, s(AppStrings.Key.RUSSIAN), AppSettings.LANGUAGE_RU, value -> {
+            settings.setLanguage(value);
+            recreate();
+         }),
+         toggleRow(s(AppStrings.Key.HAPTIC_FEEDBACK), settings.hapticEnabled(), settings::setHapticEnabled));
 
-      root.addView(sectionTitle(s(AppStrings.Key.EDITOR)));
-      root.addView(numberRow(s(AppStrings.Key.FONT_SIZE), settings.editorFontSizeSp(), 10, 28, settings::setEditorFontSizeSp));
-      root.addView(numberRow(s(AppStrings.Key.TAB_SIZE), settings.tabSize(), 2, 8, settings::setTabSize));
-      root.addView(toggleRow(s(AppStrings.Key.AUTO_CLOSE_BRACKETS_AND_QUOTES), settings.autoClosePairs(), settings::setAutoClosePairs));
+      addSection(root, s(AppStrings.Key.EDITOR),
+         numberRow(s(AppStrings.Key.FONT_SIZE), settings.editorFontSizeSp(), 10, 28, settings::setEditorFontSizeSp),
+         numberRow(s(AppStrings.Key.TAB_SIZE), settings.tabSize(), 2, 8, settings::setTabSize),
+         toggleRow(s(AppStrings.Key.AUTO_CLOSE_BRACKETS_AND_QUOTES), settings.autoClosePairs(), settings::setAutoClosePairs));
 
-      root.addView(sectionTitle(s(AppStrings.Key.CONSOLE)));
-      root.addView(numberRow(s(AppStrings.Key.FONT_SIZE), settings.consoleFontSizeSp(), 10, 24, settings::setConsoleFontSizeSp));
+      addSection(root, s(AppStrings.Key.CONSOLE),
+         numberRow(s(AppStrings.Key.FONT_SIZE), settings.consoleFontSizeSp(), 10, 24, settings::setConsoleFontSizeSp));
 
-      root.addView(sectionTitle(s(AppStrings.Key.APPEARANCE)));
-      root.addView(choiceRow(s(AppStrings.Key.THEME), settings.themeMode(), s(AppStrings.Key.DARK), AppSettings.THEME_DARK, s(AppStrings.Key.LIGHT), AppSettings.THEME_LIGHT, settings::setThemeMode));
+      addSection(root, s(AppStrings.Key.APPEARANCE),
+         themeGridRow(s(AppStrings.Key.THEME), settings.themeMode(), EditorTheme.listThemes(this), this::changeThemeMode));
 
       setContentView(scroll);
       scroll.requestApplyInsets();
@@ -120,6 +144,161 @@ public final class SettingsActivity extends ComponentActivity {
             }
          });
       }
+   }
+
+   private void changeThemeMode(String themeMode) {
+      if (themeMode.equals(appliedThemeMode)) {
+         return;
+      }
+      settings.setThemeMode(themeMode);
+      animateThemeChange(themeMode);
+   }
+
+   private void animateThemeChange(String themeMode) {
+      EditorTheme from = theme;
+      EditorTheme to = EditorTheme.load(this, themeMode);
+      cancelThemeAnimation();
+      appliedThemeMode = themeMode;
+      themeAnimator = ValueAnimator.ofFloat(0f, 1f);
+      themeAnimator.setDuration(220L);
+      themeAnimator.addUpdateListener(animator -> applyAnimatedTheme(EditorTheme.interpolate(from, to, (Float) animator.getAnimatedValue())));
+      final boolean[] canceled = {false};
+      themeAnimator.addListener(new AnimatorListenerAdapter() {
+         @Override
+         public void onAnimationEnd(Animator animation) {
+            if (canceled[0]) {
+               return;
+            }
+            themeAnimator = null;
+            applyAnimatedTheme(to);
+         }
+
+         @Override
+         public void onAnimationCancel(Animator animation) {
+            canceled[0] = true;
+            themeAnimator = null;
+         }
+      });
+      themeAnimator.start();
+   }
+
+   private void cancelThemeAnimation() {
+      if (themeAnimator != null) {
+         ValueAnimator animator = themeAnimator;
+         themeAnimator = null;
+         animator.cancel();
+      }
+   }
+
+   private void applyAnimatedTheme(EditorTheme nextTheme) {
+      EditorTheme previousTheme = theme;
+      theme = nextTheme;
+      applySystemBarColors();
+      applyThemeToTree(scrollView, previousTheme, theme);
+   }
+
+   private void applyThemeToTree(View view, EditorTheme previousTheme, EditorTheme nextTheme) {
+      if (view == null) {
+         return;
+      }
+      if (view instanceof ThemeAware) {
+         ((ThemeAware) view).applyTheme(nextTheme);
+      } else if (view instanceof TextView) {
+         remapTextColor((TextView) view, previousTheme, nextTheme);
+      }
+      remapBackgroundColor(view, previousTheme, nextTheme);
+      if (view instanceof ViewGroup) {
+         ViewGroup group = (ViewGroup) view;
+         for (int i = 0; i < group.getChildCount(); i++) {
+            applyThemeToTree(group.getChildAt(i), previousTheme, nextTheme);
+         }
+      }
+   }
+
+   private void remapTextColor(TextView textView, EditorTheme previousTheme, EditorTheme nextTheme) {
+      int current = textView.getCurrentTextColor();
+      int updated = remapThemeColor(current, previousTheme, nextTheme);
+      if (updated != current) {
+         textView.setTextColor(updated);
+      }
+      if (textView instanceof EditText) {
+         ((EditText) textView).setHintTextColor(remapThemeColor(textView.getHintTextColors().getDefaultColor(), previousTheme, nextTheme));
+      }
+   }
+
+   private void remapBackgroundColor(View view, EditorTheme previousTheme, EditorTheme nextTheme) {
+      if (UiStyles.remapThemeBackground(view, previousTheme, nextTheme)) {
+         return;
+      }
+      if (view.getBackground() instanceof ColorDrawable) {
+         ColorDrawable drawable = (ColorDrawable) view.getBackground();
+         int updated = remapThemeColor(drawable.getColor(), previousTheme, nextTheme);
+         if (updated != drawable.getColor()) {
+            drawable.setColor(updated);
+         }
+      } else if (view.getBackground() instanceof GradientDrawable) {
+         GradientDrawable drawable = (GradientDrawable) view.getBackground();
+         ColorStateList color = drawable.getColor();
+         if (color == null) {
+            return;
+         }
+         int current = color.getDefaultColor();
+         int updated = remapThemeColor(current, previousTheme, nextTheme);
+         if (updated != current) {
+            drawable.setColor(updated);
+         }
+      }
+   }
+
+   private int remapThemeColor(int color, EditorTheme previousTheme, EditorTheme nextTheme) {
+      if (color == previousTheme.background) return nextTheme.background;
+      if (color == previousTheme.surface) return nextTheme.surface;
+      if (color == previousTheme.surfaceSoft) return nextTheme.surfaceSoft;
+      if (color == previousTheme.border) return nextTheme.border;
+      if (sameRgb(color, previousTheme.border)) return withAlpha(nextTheme.border, Color.alpha(color));
+      if (color == previousTheme.text) return nextTheme.text;
+      if (color == previousTheme.textMuted) return nextTheme.textMuted;
+      if (color == previousTheme.accent) return nextTheme.accent;
+      if (color == previousTheme.codeAccent) return nextTheme.codeAccent;
+      if (color == previousTheme.error) return nextTheme.error;
+      return color;
+   }
+
+   private boolean sameRgb(int left, int right) {
+      return Color.red(left) == Color.red(right)
+         && Color.green(left) == Color.green(right)
+         && Color.blue(left) == Color.blue(right);
+   }
+
+   private void addSection(LinearLayout root, String title, View... rows) {
+      root.addView(sectionTitle(title));
+      LinearLayout card = sectionCard();
+      for (int i = 0; i < rows.length; i++) {
+         card.addView(rows[i]);
+         if (i < rows.length - 1) {
+            card.addView(sectionDivider());
+         }
+      }
+      root.addView(card);
+   }
+
+   private LinearLayout sectionCard() {
+      LinearLayout card = new LinearLayout(this);
+      card.setOrientation(LinearLayout.VERTICAL);
+      UiStyles.roundedStroke(card, theme.surface, theme.border, dp(1), dp(12));
+      LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+      params.setMargins(0, 0, 0, dp(8));
+      card.setLayoutParams(params);
+      return card;
+   }
+
+   private View sectionDivider() {
+      View divider = new View(this);
+      divider.setBackgroundColor(withAlpha(theme.border, 150));
+      LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1);
+      params.setMargins(dp(14), 0, dp(14), 0);
+      divider.setLayoutParams(params);
+      return divider;
    }
 
    private TextView sectionTitle(String text) {
@@ -191,13 +370,14 @@ public final class SettingsActivity extends ComponentActivity {
    }
 
    private LinearLayout choiceRow(String label, String selected, String firstLabel, String firstValue, String secondLabel, String secondValue, StringAction action) {
+      return choiceRow(label, selected, firstLabel, firstValue, secondLabel, secondValue, action, true);
+   }
+
+   private LinearLayout choiceRow(String label, String selected, String firstLabel, String firstValue, String secondLabel, String secondValue, StringAction action, boolean recreateOnClick) {
       LinearLayout wrapper = new LinearLayout(this);
       wrapper.setOrientation(LinearLayout.VERTICAL);
       wrapper.setPadding(dp(14), dp(12), dp(14), dp(12));
-      UiStyles.roundedStroke(wrapper, theme.surface, theme.border, dp(1), dp(12));
-      LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-      params.setMargins(0, 0, 0, dp(8));
-      wrapper.setLayoutParams(params);
+      wrapper.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
       TextView text = rowLabel(label);
       wrapper.addView(text);
@@ -210,14 +390,18 @@ public final class SettingsActivity extends ComponentActivity {
       TextView first = choiceButton(firstLabel, selected.equals(firstValue));
       first.setOnClickListener(view -> {
          action.apply(firstValue);
-         recreate();
+         if (recreateOnClick) {
+            recreate();
+         }
       });
       choices.addView(first, new LinearLayout.LayoutParams(0, dp(40), 1f));
 
       TextView second = choiceButton(secondLabel, selected.equals(secondValue));
       second.setOnClickListener(view -> {
          action.apply(secondValue);
-         recreate();
+         if (recreateOnClick) {
+            recreate();
+         }
       });
       LinearLayout.LayoutParams secondParams = new LinearLayout.LayoutParams(0, dp(40), 1f);
       secondParams.setMargins(dp(8), 0, 0, 0);
@@ -225,23 +409,123 @@ public final class SettingsActivity extends ComponentActivity {
       return wrapper;
    }
 
-   private TextView choiceButton(String label, boolean active) {
-      TextView button = new TextView(this);
+   private LinearLayout choiceRow(String label, String selected, String firstLabel, String firstValue, String secondLabel, String secondValue, String thirdLabel, String thirdValue, StringAction action) {
+      LinearLayout wrapper = new LinearLayout(this);
+      wrapper.setOrientation(LinearLayout.VERTICAL);
+      wrapper.setPadding(dp(14), dp(12), dp(14), dp(12));
+      wrapper.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+      TextView text = rowLabel(label);
+      wrapper.addView(text);
+
+      LinearLayout choices = new LinearLayout(this);
+      choices.setOrientation(LinearLayout.HORIZONTAL);
+      choices.setPadding(0, dp(10), 0, 0);
+      wrapper.addView(choices, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+      TextView first = choiceButton(firstLabel, selected.equals(firstValue));
+      TextView second = choiceButton(secondLabel, selected.equals(secondValue));
+      TextView third = choiceButton(thirdLabel, selected.equals(thirdValue));
+      TextView[] buttons = {first, second, third};
+      String[] values = {firstValue, secondValue, thirdValue};
+
+      first.setOnClickListener(view -> {
+         applyChoiceSelection(buttons, values, firstValue);
+         action.apply(firstValue);
+      });
+      choices.addView(first, new LinearLayout.LayoutParams(0, dp(40), 1f));
+
+      second.setOnClickListener(view -> {
+         applyChoiceSelection(buttons, values, secondValue);
+         action.apply(secondValue);
+      });
+      LinearLayout.LayoutParams secondParams = new LinearLayout.LayoutParams(0, dp(40), 1f);
+      secondParams.setMargins(dp(8), 0, 0, 0);
+      choices.addView(second, secondParams);
+
+      third.setOnClickListener(view -> {
+         applyChoiceSelection(buttons, values, thirdValue);
+         action.apply(thirdValue);
+      });
+      LinearLayout.LayoutParams thirdParams = new LinearLayout.LayoutParams(0, dp(40), 1f);
+      thirdParams.setMargins(dp(8), 0, 0, 0);
+      choices.addView(third, thirdParams);
+      return wrapper;
+   }
+
+   private LinearLayout themeGridRow(String label, String selected, List<EditorTheme.ThemeInfo> themes, StringAction action) {
+      LinearLayout wrapper = new LinearLayout(this);
+      wrapper.setOrientation(LinearLayout.VERTICAL);
+      wrapper.setPadding(dp(14), dp(12), dp(14), dp(12));
+      wrapper.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+      TextView text = rowLabel(label);
+      wrapper.addView(text);
+
+      GridLayout choices = new GridLayout(this);
+      int columns = 2;
+      choices.setColumnCount(columns);
+      choices.setPadding(0, dp(10), 0, 0);
+      wrapper.addView(choices, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+      TextView[] buttons = new TextView[themes.size()];
+      String[] values = new String[themes.size()];
+      for (int i = 0; i < themes.size(); i++) {
+         EditorTheme.ThemeInfo themeInfo = themes.get(i);
+         ChoiceButton button = choiceButton(themeInfo.name, selected.equals(themeInfo.id));
+         button.setSingleLine(true);
+         button.setMaxLines(1);
+         button.setEllipsize(TextUtils.TruncateAt.END);
+         button.setContentDescription(themeInfo.name);
+         buttons[i] = button;
+         values[i] = themeInfo.id;
+
+         button.setOnClickListener(view -> {
+            applyChoiceSelection(buttons, values, themeInfo.id);
+            action.apply(themeInfo.id);
+         });
+
+         int row = i / columns;
+         int column = i % columns;
+         GridLayout.LayoutParams params = new GridLayout.LayoutParams(GridLayout.spec(row), GridLayout.spec(column, 1f));
+         params.width = 0;
+         params.height = dp(40);
+         params.setMargins(column == 0 ? 0 : dp(8), row == 0 ? 0 : dp(8), 0, 0);
+         choices.addView(button, params);
+      }
+      return wrapper;
+   }
+
+   private void applyChoiceSelection(TextView[] buttons, String[] values, String selected) {
+      for (int i = 0; i < buttons.length; i++) {
+         styleChoiceButton(buttons[i], values[i].equals(selected));
+      }
+   }
+
+   private ChoiceButton choiceButton(String label, boolean active) {
+      ChoiceButton button = new ChoiceButton(this);
       button.setText(label);
-      button.setTextColor(active ? theme.background : theme.text);
       button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
       button.setGravity(Gravity.CENTER);
-      UiStyles.roundedStroke(button, active ? theme.accent : theme.surfaceSoft, active ? theme.accent : theme.border, dp(1), dp(10));
+      button.setPadding(dp(8), 0, dp(8), 0);
+      button.setChoiceActive(active);
       return button;
+   }
+
+   private void styleChoiceButton(TextView button, boolean active) {
+      if (button instanceof ChoiceButton) {
+         ((ChoiceButton) button).setChoiceActive(active);
+         return;
+      }
+      button.setTextColor(active ? theme.background : theme.text);
+      UiStyles.roundedStroke(button, active ? theme.accent : theme.surfaceSoft, active ? theme.accent : theme.border, dp(1), dp(10));
    }
 
    private LinearLayout baseRow() {
       LinearLayout row = new LinearLayout(this);
       row.setGravity(Gravity.CENTER_VERTICAL);
       row.setPadding(dp(14), dp(12), dp(14), dp(12));
-      UiStyles.roundedStroke(row, theme.surface, theme.border, dp(1), dp(12));
       LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-      params.setMargins(0, 0, 0, dp(8));
       row.setLayoutParams(params);
       return row;
    }
@@ -270,6 +554,29 @@ public final class SettingsActivity extends ComponentActivity {
 
    private int dp(int value) {
       return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, getResources().getDisplayMetrics()));
+   }
+
+   private static int withAlpha(int color, int alpha) {
+      return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
+   }
+
+   private final class ChoiceButton extends TextView implements ThemeAware {
+      private boolean active;
+
+      ChoiceButton(android.content.Context context) {
+         super(context);
+      }
+
+      void setChoiceActive(boolean active) {
+         this.active = active;
+         applyTheme(theme);
+      }
+
+      @Override
+      public void applyTheme(EditorTheme theme) {
+         setTextColor(active ? theme.background : theme.text);
+         UiStyles.roundedStroke(this, active ? theme.accent : theme.surfaceSoft, active ? theme.accent : theme.border, dp(1), dp(10));
+      }
    }
 
    private interface BooleanAction {

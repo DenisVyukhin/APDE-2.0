@@ -1,47 +1,71 @@
-# APDE 2.0 Build Plan
+# План развития APDE 2.0
 
-## Phase 1: Editor MVP
+Этот файл не пытается быть точным календарем релизов. Он показывает, какими слоями развивается APDE 2.0 и что еще нужно закрыть, чтобы проект вырос из редактора с превью в полноценную Android-среду для Processing.
 
-- Native Android Java project.
-- Programmatic UI without external dependencies.
-- Editor tabs.
-- Syntax highlighting.
-- Persistent sketch storage.
-- Diagnostics panel.
-- Preview runner for supported Processing calls.
+## Уже есть рабочая основа
 
-Status: implemented.
+Первая цель была простой: приложение должно быть полезным еще до появления полного слоя Android-сборки. Сейчас эта основа уже собрана:
 
-## Phase 2: Processing language coverage
+- нативное Android-приложение с программно собранным UI;
+- редактор `.pde`-файлов с вкладками;
+- подсветка Java и Processing-синтаксиса;
+- скетчбук, недавние проекты и работа с внешними папками;
+- настройки редактора, консоли, языка и темы;
+- консоль с сообщениями, ошибками и выводом скетча;
+- инструменты вроде автоформата, поиска/замены и выбора цвета.
 
-- Variables and expressions.
-- `mouseX`, `mouseY`, `pmouseX`, `pmouseY`.
-- `if`, `for`, functions.
-- More drawing APIs: `arc`, `triangle`, `quad`, `beginShape`.
-- Touch input mapping.
-- Better parser instead of regex-line parsing.
+## Ближайший технический слой: превью скетча
 
-## Phase 3: Real Android compiler backend
+Ранний Canvas runner уже не является главным путем запуска. Текущий путь после Run идет через отдельный конвейер превью:
 
-- Extract compiler interface:
-  - `compile(files, target)`
-  - `diagnostics`
-  - `artifact`
-- Add PDE preprocessor compatible with Processing Java mode. Status: first project-generator layer implemented.
-- Generate Processing Android project snapshot with `PApplet`, Android manifest, launcher activity, Gradle files, and Processing Android core dependency. Status: implemented.
-- Bundle Processing Android runtime.
-- Add ECJ Java compilation on-device.
-- Add D8 dex generation.
-- Build debug APK and sign it.
-- Install and launch generated sketch package.
+- `.pde`-вкладки собираются в Java-класс `PApplet`;
+- сгенерированный Java-код компилируется на устройстве через ECJ;
+- `.class`-файлы превращаются в dex через D8;
+- dex и данные передаются отдельному приложению Sketch Preview;
+- ошибки компиляции и ошибки во время работы возвращаются в консоль редактора.
 
-## Phase 4: IDE quality
+Этот слой уже работает, но его еще нужно довести до надежного состояния:
 
-- File tree and sketchbook.
-- Rename tabs.
-- Error line gutter.
-- Formatting.
-- Search/replace.
-- Export/share APK.
-- Library manager.
-- Examples browser.
+- лучше связывать diagnostics с открытыми вкладками и строками редактора;
+- расширить поддержку проектных файлов и библиотек;
+- аккуратно обработать permissions, manifest и ресурсы Android;
+- решить вопрос с кэшем сборки и воспроизводимостью набора инструментов.
+
+Подробная схема текущего запуска описана в [sketch-preview.md](sketch-preview.md).
+
+## Расширение поддержки Processing
+
+Следующая задача - запускать более реальные скетчи, а не только короткие примеры. Для этого нужны:
+
+- более устойчивая предобработка PDE;
+- поддержка `import`, нескольких вкладок и привычных Processing-конструкций без частных обходов;
+- нормальная работа с `mouseX`, `mouseY`, касаниями и событиями;
+- более широкое покрытие функций рисования: `arc`, `triangle`, `quad`, `beginShape` и дальше;
+- понятная обработка пользовательского кода, функций, классов и выражений;
+- совместимость с тем, как Processing Android Mode ожидает видеть проект.
+
+## Полная Android-сборка
+
+Превью и готовое Android-приложение - не одно и то же. Чтобы APDE мог собирать sketch APK, нужен отдельный слой:
+
+1. стабильный контракт компилятора с входными файлами, diagnostics и артефактами;
+2. генерация Android-проекта и manifest с учетом свойств скетча;
+3. сборка ресурсов и библиотек;
+4. dex, упаковка и подпись;
+5. установка и запуск собранного пакета;
+6. экспорт или шаринг готового APK.
+
+Часть строительных блоков уже появилась в конвейере превью, но полноценный сценарий экспорта пока не завершен.
+
+## Качество IDE
+
+Когда основной путь сборки станет устойчивее, проекту понадобится и более сильный редакторский слой:
+
+- маркеры ошибок у строк и переход из diagnostics к нужному месту;
+- форматирование и поиск, которые хорошо работают на крупных файлах;
+- управление библиотеками;
+- примеры и справочник внутри приложения;
+- экспорт и шаринг результата;
+- дальнейшее развитие файлового дерева и сценариев работы со скетчбуком.
+
+Порядок этих задач может меняться. Главное ограничение сейчас не в количестве кнопок в интерфейсе, а в надежности пути от `.pde`-проекта до запускаемого Android-скетча.

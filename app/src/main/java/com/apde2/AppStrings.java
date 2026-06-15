@@ -21,6 +21,7 @@ final class AppStrings {
       THEME,
       DARK,
       LIGHT,
+      APDE_LIGHT,
       EDITOR_READY,
       OPENED_FOLDER,
       NOTHING_TO_UNDO,
@@ -42,6 +43,10 @@ final class AppStrings {
       DELETED,
       OPEN_ELLIPSIS,
       FILES,
+      SKETCHES,
+      EXAMPLES,
+      LIBRARY_EXAMPLES,
+      RECENT,
       CHOOSE_FOLDER_TO_SHOW_FILES,
       THIS_PROJECT_IS_EMPTY,
       NEW_FILE_MENU,
@@ -67,15 +72,32 @@ final class AppStrings {
       COULD_NOT_SAVE_EXTERNAL_FILE,
       UNTITLED,
       NEW_SKETCH,
+      SAVE_SKETCH,
+      RECENT_SKETCHES,
+      NO_RECENT_SKETCHES,
       LOAD_SKETCH,
+      SAVE_TO_SKETCHBOOK,
       MOVE_TO_SKETCHBOOK,
       RENAME_SKETCH,
+      DELETE_DRAFT,
       DELETE_SKETCH,
       TOOLS,
       SKETCH_PROPERTIES,
       AUTO_FORMAT,
       COLOR_SELECTOR,
       FIND_REPLACE,
+      FIND,
+      REPLACE,
+      PREVIOUS,
+      NEXT,
+      REPLACE_ALL,
+      MATCH_CASE,
+      MORE,
+      LESS,
+      SEARCH_FIELD_EMPTY,
+      NO_MATCHES_FOUND,
+      FIND_MATCH_COUNT,
+      REPLACED_OCCURRENCES,
       IMPORT_LIBRARY,
       OPEN_REFERENCE,
       AI_AGENT,
@@ -94,7 +116,10 @@ final class AppStrings {
       DELETE_TAB,
       IS_NOT_IMPLEMENTED_YET,
       CANCEL,
+      SAVE,
       ENTER_A_VALID_NAME,
+      ENTER_A_VALID_VALUE,
+      CANNOT_CREATE_IN_SYSTEM_FOLDER,
       COULD_NOT_RENAME_EXTERNAL_FILE,
       RENAMED_TAB_TO,
       NO_ERRORS,
@@ -148,6 +173,7 @@ final class AppStrings {
          case THEME: return tr("Theme", "Тема оформления");
          case DARK: return tr("Dark", "Темная");
          case LIGHT: return tr("Light", "Светлая");
+         case APDE_LIGHT: return tr("APDE", "APDE");
          case EDITOR_READY: return tr("Editor ready.", "Редактор готов.");
          case OPENED_FOLDER: return tr("Opened folder %s.", "Открыта папка %s.");
          case NOTHING_TO_UNDO: return tr("Nothing to undo.", "Нечего отменять.");
@@ -169,6 +195,10 @@ final class AppStrings {
          case DELETED: return tr("Deleted %s.", "Удалено: %s.");
          case OPEN_ELLIPSIS: return tr("Open...", "Открыть...");
          case FILES: return tr("Files", "Файлы");
+         case SKETCHES: return tr("Sketches", "Скетчи");
+         case EXAMPLES: return tr("Examples", "Примеры");
+         case LIBRARY_EXAMPLES: return tr("Library Examples", "Примеры библиотек");
+         case RECENT: return tr("Recent", "Недавние");
          case CHOOSE_FOLDER_TO_SHOW_FILES: return tr("Choose a folder to show files.", "Выбери папку, чтобы показать файлы.");
          case THIS_PROJECT_IS_EMPTY: return tr("This project is empty.", "Этот проект пуст.");
          case NEW_FILE_MENU: return tr("New File", "Новый файл");
@@ -194,15 +224,32 @@ final class AppStrings {
          case COULD_NOT_SAVE_EXTERNAL_FILE: return tr("Could not save external file.", "Не удалось сохранить внешний файл.");
          case UNTITLED: return tr("Untitled", "Без названия");
          case NEW_SKETCH: return tr("New Sketch", "Новый скетч");
-         case LOAD_SKETCH: return tr("Load Sketch", "Открыть скетч");
+         case SAVE_SKETCH: return tr("Save Sketch", "Сохранить скетч");
+         case RECENT_SKETCHES: return tr("Recent Sketches", "Недавние скетчи");
+         case NO_RECENT_SKETCHES: return tr("No recent sketches.", "Недавних скетчей нет.");
+         case LOAD_SKETCH: return tr("Open Folder", "Открыть папку");
+         case SAVE_TO_SKETCHBOOK: return tr("Save to Sketchbook", "Сохранить в Sketchbook");
          case MOVE_TO_SKETCHBOOK: return tr("Move to Sketchbook", "Переместить в Sketchbook");
          case RENAME_SKETCH: return tr("Rename Sketch", "Переименовать скетч");
+         case DELETE_DRAFT: return tr("Delete Draft", "Удалить черновик");
          case DELETE_SKETCH: return tr("Delete Sketch", "Удалить скетч");
          case TOOLS: return tr("Tools", "Инструменты");
          case SKETCH_PROPERTIES: return tr("Sketch Properties", "Свойства скетча");
          case AUTO_FORMAT: return tr("Auto Format", "Автоформат");
          case COLOR_SELECTOR: return tr("Color Selector", "Выбор цвета");
          case FIND_REPLACE: return tr("Find/Replace", "Поиск/Замена");
+         case FIND: return tr("Find", "Найти");
+         case REPLACE: return tr("Replace", "Заменить");
+         case PREVIOUS: return tr("Previous", "Назад");
+         case NEXT: return tr("Next", "Далее");
+         case REPLACE_ALL: return tr("Replace All", "Заменить все");
+         case MATCH_CASE: return tr("Match Case", "Учитывать регистр");
+         case MORE: return tr("More", "Еще");
+         case LESS: return tr("Less", "Скрыть");
+         case SEARCH_FIELD_EMPTY: return tr("Enter text to find.", "Введите текст для поиска.");
+         case NO_MATCHES_FOUND: return tr("No matches found.", "Совпадений не найдено.");
+         case FIND_MATCH_COUNT: return tr("%d of %d matches", "%d из %d совпадений");
+         case REPLACED_OCCURRENCES: return tr("Replaced %d occurrences.", "Заменено совпадений: %d.");
          case IMPORT_LIBRARY: return tr("Import Library", "Импорт библиотеки");
          case OPEN_REFERENCE: return tr("Open Reference", "Открыть справочник");
          case AI_AGENT: return tr("AI Agent", "AI Agent");
@@ -221,26 +268,29 @@ final class AppStrings {
          case DELETE_TAB: return tr("Delete Tab", "Удалить вкладку");
          case IS_NOT_IMPLEMENTED_YET: return tr("%s is not implemented yet.", "%s пока не реализовано.");
          case CANCEL: return tr("Cancel", "Отмена");
+         case SAVE: return tr("Save", "Сохранить");
          case ENTER_A_VALID_NAME: return tr("Enter a valid name", "Введите корректное имя");
+         case ENTER_A_VALID_VALUE: return tr("Enter a valid value", "Введите корректное значение");
+         case CANNOT_CREATE_IN_SYSTEM_FOLDER: return tr("Files and folders cannot be created here.", "Здесь нельзя создавать файлы и папки.");
          case COULD_NOT_RENAME_EXTERNAL_FILE: return tr("Could not rename external file.", "Не удалось переименовать внешний файл.");
          case RENAMED_TAB_TO: return tr("Renamed tab to %s.", "Вкладка переименована в %s.");
          case NO_ERRORS: return tr("No errors.", "Ошибок нет.");
          case NO_CONSOLE_OUTPUT: return tr("No console output.", "Консоль пуста.");
          case CONSOLE_MESSAGE_COPIED: return tr("Console message copied.", "Сообщение из консоли скопировано.");
-         case SKETCH_DISPLAY_NAME: return tr("Sketch Display Name", "Sketch Display Name");
-         case PACKAGE_NAME: return tr("Package Name", "Package Name");
-         case VERSION_CODE: return tr("Version Code", "Version Code");
-         case VERSION_NAME: return tr("Version Name", "Version Name");
-         case SKETCH_PERMISSIONS: return tr("Sketch Permissions", "Sketch Permissions");
+         case SKETCH_DISPLAY_NAME: return tr("Sketch Display Name", "Отображаемое имя скетча");
+         case PACKAGE_NAME: return tr("Package Name", "Имя пакета");
+         case VERSION_CODE: return tr("Version Code", "Код версии");
+         case VERSION_NAME: return tr("Version Name", "Имя версии");
+         case SKETCH_PERMISSIONS: return tr("Sketch Permissions", "Разрешения скетча");
          case TARGET_SDK: return tr("Target SDK", "Target SDK");
          case MINIMUM_SDK: return tr("Minimum SDK", "Minimum SDK");
-         case LOCKED_ORIENTATION: return tr("Locked Orientation", "Locked Orientation");
-         case ADD_FILE: return tr("Add File", "Add File");
-         case CHANGE_SKETCH_ICON: return tr("Change Sketch Icon", "Change Sketch Icon");
-         case NONE: return tr("None", "None");
-         case PORTRAIT: return tr("Portrait", "Portrait");
-         case LANDSCAPE: return tr("Landscape", "Landscape");
-         case REVERSE_LANDSCAPE: return tr("Reverse Landscape", "Reverse Landscape");
+         case LOCKED_ORIENTATION: return tr("Locked Orientation", "Фиксированная ориентация");
+         case ADD_FILE: return tr("Add File", "Добавить файл");
+         case CHANGE_SKETCH_ICON: return tr("Change Sketch Icon", "Изменить иконку скетча");
+         case NONE: return tr("None", "Нет");
+         case PORTRAIT: return tr("Portrait", "Портретная");
+         case LANDSCAPE: return tr("Landscape", "Альбомная");
+         case REVERSE_LANDSCAPE: return tr("Reverse Landscape", "Обратная альбомная");
          default: return "";
       }
    }

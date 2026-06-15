@@ -10,7 +10,7 @@ import android.graphics.Shader;
 import android.view.MotionEvent;
 import android.view.View;
 
-final class HueSliderView extends View {
+final class HueSliderView extends View implements ThemeAware {
    interface Listener {
       void onHueChanged(float hue);
    }
@@ -23,14 +23,20 @@ final class HueSliderView extends View {
    private float hue = 120f;
    private Listener listener;
 
-   HueSliderView(Context context) {
+   HueSliderView(Context context, EditorTheme theme) {
       super(context);
       strokePaint.setStyle(Paint.Style.STROKE);
-      strokePaint.setColor(Color.argb(255, 48, 54, 61));
-      markerPaint.setColor(Color.WHITE);
       markerStrokePaint.setStyle(Paint.Style.STROKE);
       markerStrokePaint.setStrokeWidth(dp(2));
-      markerStrokePaint.setColor(Color.argb(150, 0, 0, 0));
+      applyTheme(theme);
+   }
+
+   @Override
+   public void applyTheme(EditorTheme theme) {
+      strokePaint.setColor(theme.colorPickerBorder);
+      markerPaint.setColor(theme.hueSliderMarker);
+      markerStrokePaint.setColor(theme.hueSliderMarkerStroke);
+      invalidate();
    }
 
    void setListener(Listener listener) {

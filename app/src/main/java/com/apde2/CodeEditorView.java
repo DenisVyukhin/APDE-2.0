@@ -6,10 +6,10 @@ import android.os.Looper;
 import android.view.MotionEvent;
 import android.text.Editable;
 import android.text.InputType;
-import android.text.Layout;
 import android.text.Spannable;
 import android.text.TextWatcher;
 import android.text.style.ForegroundColorSpan;
+import android.util.SparseArray;
 import android.util.TypedValue;
 import android.view.KeyEvent;
 import android.view.inputmethod.EditorInfo;
@@ -23,18 +23,23 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.regex.Matcher;
 
-final class CodeEditorView extends EditText {
+final class CodeEditorView extends EditText implements ThemeAware {
    private static final long HISTORY_SNAPSHOT_DELAY_MS = 500L;
+   private static final long HIGHLIGHT_DEBOUNCE_MS = 40L;
+   private static final int FULL_HIGHLIGHT_THRESHOLD = 4096;
+   private static final int SELECTION_REVEAL_SCROLL_DURATION_MS = 180;
 
-   private final EditorTheme theme;
+   private EditorTheme theme;
    private final OverScroller flingScroller;
    private final Deque<EditState> undoStack = new ArrayDeque<>();
    private final Deque<EditState> redoStack = new ArrayDeque<>();
-   private final Handler historyHandler = new Handler(Looper.getMainLooper());
+   private final Handler mainHandler = new Handler(Looper.getMainLooper());
    private final Runnable commitHistoryRunnable = this::commitPendingHistory;
+   private final IncrementalHighlighter highlighter;
    private final int maximumFlingVelocity;
    private final int minimumFlingVelocity;
-   private boolean highlighting;
+   private final int touchSlop;
+
    private boolean editingPair;
    private boolean editingHistory;
    private EditState pendingState;
@@ -42,9 +47,12 @@ final class CodeEditorView extends EditText {
    private int skipPairEditStart = -1;
    private float touchStartX;
    private float touchStartY;
-   private int touchStartSelection;
+   private int touchStartScrollX;
+   private int touchStartScrollY;
    private boolean touchStartedFocused;
    private boolean touchMoved;
+   private boolean touchGestureActive;
+   private boolean scrollingGesture;
    private boolean selectionMode;
    private boolean selectionScrollLocked;
    private int selectionLockScrollX;
@@ -52,13 +60,26 @@ final class CodeEditorView extends EditText {
    private int tabSize = 3;
    private boolean autoClosePairs = true;
 
+   private int cachedMaxScrollX = -1;
+   private int cachedMaxScrollY = -1;
+   private int bottomOverlayInset = 0;
+
+   private boolean externalResize = false;
+   private boolean externalResizeTracksOverlayBounds = false;
+   private int externalResizeScrollX;
+   private int externalResizeScrollY;
+   private int externalResizeGeneration;
+
    CodeEditorView(Context context, EditorTheme theme) {
       super(context);
       this.theme = theme;
       flingScroller = new OverScroller(context);
-      ViewConfiguration viewConfiguration = ViewConfiguration.get(context);
-      maximumFlingVelocity = viewConfiguration.getScaledMaximumFlingVelocity();
-      minimumFlingVelocity = viewConfiguration.getScaledMinimumFlingVelocity();
+      ViewConfiguration vc = ViewConfiguration.get(context);
+      maximumFlingVelocity = vc.getScaledMaximumFlingVelocity();
+      minimumFlingVelocity = vc.getScaledMinimumFlingVelocity();
+      touchSlop = vc.getScaledTouchSlop();
+      highlighter = new IncrementalHighlighter(theme);
+
       setTextColor(theme.text);
       setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
       setTypeface(AppFonts.code(context));
@@ -74,8 +95,13 @@ final class CodeEditorView extends EditText {
       setShowSoftInputOnFocus(false);
       setVerticalScrollBarEnabled(true);
       setOverScrollMode(OVER_SCROLL_IF_CONTENT_SCROLLS);
-      setScrollContainer(true);
-      setOnFocusChangeListener((view, hasFocus) -> setCursorVisible(hasFocus));
+      setScrollContainer(false);
+      setOnFocusChangeListener((view, hasFocus) -> {
+         setCursorVisible(hasFocus);
+         if (!hasFocus) {
+            resetSelectionGestureState();
+         }
+      });
 
       addTextChangedListener(new TextWatcher() {
          @Override
@@ -87,35 +113,67 @@ final class CodeEditorView extends EditText {
 
          @Override
          public void onTextChanged(CharSequence s, int start, int before, int count) {
+            highlighter.markDirty(start, start + count);
          }
 
          @Override
          public void afterTextChanged(Editable editable) {
             scheduleHistorySnapshot();
-            highlight(editable);
+            invalidateScrollBounds();
+            highlighter.scheduleHighlight(editable);
          }
       });
    }
 
    @Override
+   public void applyTheme(EditorTheme theme) {
+      this.theme = theme;
+      highlighter.applyTheme(theme);
+      setTextColor(theme.text);
+      setBackgroundColor(theme.background);
+      setHighlightColor(theme.selection);
+      highlighter.applyFullHighlight(getText());
+      invalidate();
+   }
+
+   @Override
    public boolean onTouchEvent(MotionEvent event) {
-      if (event.getAction() == MotionEvent.ACTION_DOWN) {
+      int action = event.getActionMasked();
+      if (action == MotionEvent.ACTION_DOWN) {
          flingScroller.abortAnimation();
-         recycleVelocityTracker();
-         velocityTracker = VelocityTracker.obtain();
+         ensureVelocityTracker();
+         velocityTracker.clear();
          touchStartX = event.getX();
          touchStartY = event.getY();
-         touchStartSelection = Math.max(0, getSelectionStart());
+         touchStartScrollX = getScrollX();
+         touchStartScrollY = getScrollY();
          touchStartedFocused = hasFocus();
          touchMoved = false;
+         touchGestureActive = true;
+         scrollingGesture = false;
          selectionMode = hasSelection();
-      } else if (event.getAction() == MotionEvent.ACTION_MOVE) {
-         ensureVelocityTracker();
-         float dx = Math.abs(event.getX() - touchStartX);
-         float dy = Math.abs(event.getY() - touchStartY);
-         if (dx >= dp(8) || dy >= dp(8)) {
-            touchMoved = true;
-            setCursorVisible(false);
+         if (!selectionMode) {
+            selectionScrollLocked = false;
+         }
+      } else if (action == MotionEvent.ACTION_MOVE) {
+         boolean selectionCandidate = isSelectionCandidate(event);
+         if (hasSelection()) {
+            selectionMode = true;
+         }
+         if (!touchMoved) {
+            float dxFromStart = Math.abs(event.getX() - touchStartX);
+            float dyFromStart = Math.abs(event.getY() - touchStartY);
+            if (dxFromStart >= touchSlop || dyFromStart >= touchSlop) {
+               touchMoved = true;
+               if (!selectionMode && !selectionCandidate) {
+                  scrollingGesture = !hasSelection();
+                  setCursorVisible(false);
+                  cancelNativeTouch(event);
+                  if (getParent() != null) {
+                     getParent().requestDisallowInterceptTouchEvent(true);
+                  }
+               }
+            }
          }
       }
 
@@ -123,22 +181,61 @@ final class CodeEditorView extends EditText {
          velocityTracker.addMovement(event);
       }
 
-      boolean handled = super.onTouchEvent(event);
+      if (scrollingGesture) {
+         if (action == MotionEvent.ACTION_MOVE) {
+            int targetX = touchStartScrollX + Math.round(touchStartX - event.getX());
+            int targetY = touchStartScrollY + Math.round(touchStartY - event.getY());
+            scrollTo(targetX, targetY);
+            return true;
+         }
+         if (action == MotionEvent.ACTION_UP) {
+            startFlingIfNeeded();
+            if (!touchStartedFocused) {
+               clearFocus();
+            }
+            setCursorVisible(false);
+            recycleVelocityTracker();
+            if (getParent() != null) {
+               getParent().requestDisallowInterceptTouchEvent(false);
+            }
+            touchGestureActive = false;
+            scrollingGesture = false;
+            return true;
+         }
+         if (action == MotionEvent.ACTION_CANCEL) {
+            flingScroller.abortAnimation();
+            recycleVelocityTracker();
+            if (getParent() != null) {
+               getParent().requestDisallowInterceptTouchEvent(false);
+            }
+            touchGestureActive = false;
+            scrollingGesture = false;
+            return true;
+         }
+      }
 
-      if (event.getAction() == MotionEvent.ACTION_UP) {
-         float dx = Math.abs(event.getX() - touchStartX);
-         float dy = Math.abs(event.getY() - touchStartY);
-         boolean tap = !touchMoved && dx < dp(8) && dy < dp(8);
-         if (tap) {
+      boolean handled = super.onTouchEvent(event);
+      if (!isNativeSelectionActive()) {
+         clampCurrentScroll();
+      }
+      if (hasSelection()) {
+         selectionMode = true;
+         setCursorVisible(true);
+      }
+
+      if (action == MotionEvent.ACTION_UP) {
+         if (!touchMoved) {
             requestFocus();
             setCursorVisible(true);
-            showKeyboard();
+            restoreTouchScrollAfterPointerPlacement();
+            if (!hasSelection()) {
+               showKeyboard();
+            }
          } else if (!selectionMode && !hasSelection()) {
             int scrollX = getScrollX();
             int scrollY = getScrollY();
             scrollTo(scrollX, scrollY);
             post(() -> scrollTo(scrollX, scrollY));
-            startFlingIfNeeded();
             if (!touchStartedFocused) {
                clearFocus();
             }
@@ -146,8 +243,11 @@ final class CodeEditorView extends EditText {
          } else {
             setCursorVisible(true);
          }
+         touchGestureActive = false;
          recycleVelocityTracker();
-      } else if (event.getAction() == MotionEvent.ACTION_CANCEL) {
+      } else if (action == MotionEvent.ACTION_CANCEL) {
+         touchGestureActive = false;
+         flingScroller.abortAnimation();
          recycleVelocityTracker();
       }
 
@@ -155,17 +255,171 @@ final class CodeEditorView extends EditText {
    }
 
    @Override
+   protected void onSelectionChanged(int selStart, int selEnd) {
+      super.onSelectionChanged(selStart, selEnd);
+      if (flingScroller == null) {
+         return;
+      }
+      if (selStart != selEnd) {
+         selectionMode = true;
+         scrollingGesture = false;
+         flingScroller.abortAnimation();
+         lockTouchSelectionScroll();
+         if (getParent() != null) {
+            getParent().requestDisallowInterceptTouchEvent(false);
+         }
+      } else if (!scrollingGesture) {
+         selectionMode = false;
+         selectionScrollLocked = false;
+      }
+   }
+
+   private boolean isSelectionCandidate(MotionEvent event) {
+      return hasSelection() || event.getEventTime() - event.getDownTime() >= ViewConfiguration.getLongPressTimeout();
+   }
+
+   private boolean isNativeSelectionActive() {
+      return selectionMode || hasSelection();
+   }
+
+   private void resetSelectionGestureState() {
+      selectionMode = false;
+      selectionScrollLocked = false;
+      touchGestureActive = false;
+      scrollingGesture = false;
+      if (flingScroller != null) {
+         flingScroller.abortAnimation();
+      }
+      recycleVelocityTracker();
+      if (getParent() != null) {
+         getParent().requestDisallowInterceptTouchEvent(false);
+      }
+   }
+
+   private void cancelNativeTouch(MotionEvent event) {
+      MotionEvent cancel = MotionEvent.obtain(event);
+      cancel.setAction(MotionEvent.ACTION_CANCEL);
+      super.onTouchEvent(cancel);
+      cancel.recycle();
+      clampCurrentScroll();
+   }
+
+   @Override
+   protected boolean overScrollBy(int deltaX, int deltaY, int scrollX, int scrollY, int scrollRangeX, int scrollRangeY, int maxOverScrollX, int maxOverScrollY, boolean isTouchEvent) {
+      if (isNativeSelectionActive()) {
+         return super.overScrollBy(deltaX, deltaY, scrollX, scrollY, scrollRangeX, scrollRangeY, maxOverScrollX, maxOverScrollY, isTouchEvent);
+      }
+      return super.overScrollBy(deltaX, deltaY, scrollX, scrollY, scrollRangeX, scrollRangeY, 0, 0, isTouchEvent);
+   }
+
+   @Override
    public void computeScroll() {
       super.computeScroll();
+      if (!isNativeSelectionActive() && clampCurrentScroll()) {
+         flingScroller.abortAnimation();
+      }
       if (flingScroller.computeScrollOffset()) {
-         scrollTo(flingScroller.getCurrX(), flingScroller.getCurrY());
-         postInvalidateOnAnimation();
+         int targetX = flingScroller.getCurrX();
+         int targetY = flingScroller.getCurrY();
+         scrollTo(targetX, targetY);
+         if (getScrollX() != targetX || getScrollY() != targetY) {
+            flingScroller.abortAnimation();
+         } else {
+            postInvalidateOnAnimation();
+         }
+      }
+   }
+
+   @Override
+   protected void onScrollChanged(int left, int top, int oldLeft, int oldTop) {
+      super.onScrollChanged(left, top, oldLeft, oldTop);
+      if (!externalResize && !isNativeSelectionActive()) {
+         clampCurrentScroll();
       }
    }
 
    @Override
    public void scrollTo(int x, int y) {
-      super.scrollTo(clamp(x, 0, maxScrollX()), clamp(y, 0, maxScrollY()));
+      if (externalResize) {
+         restoreExternalResizeScroll();
+         return;
+      }
+      if (isNativeSelectionActive()) {
+         super.scrollTo(x, y);
+         return;
+      }
+      int maxX = maxScrollX();
+      int maxY = maxScrollY();
+      int clampedX = x < 0 ? 0 : (x > maxX ? maxX : x);
+      int clampedY = y < 0 ? 0 : (y > maxY ? maxY : y);
+      super.scrollTo(clampedX, clampedY);
+   }
+
+   @Override
+   public boolean bringPointIntoView(int offset) {
+      return bringOffsetAboveBottomOverlay(offset, 0);
+   }
+
+   void revealSelectionAboveBottomOverlay() {
+      if (bottomOverlayInset <= 0 || getSelectionEnd() < 0) {
+         return;
+      }
+      int revealMargin = Math.max(getLineHeight() * 2, dp(24));
+      bringOffsetAboveBottomOverlay(getSelectionEnd(), revealMargin, true);
+   }
+
+   void revealSelectionAfterOverlaySettles() {
+      postOnAnimation(() -> postOnAnimation(this::revealSelectionAboveBottomOverlay));
+   }
+
+   private boolean bringOffsetAboveBottomOverlay(int offset, int bottomMargin) {
+      return bringOffsetAboveBottomOverlay(offset, bottomMargin, false);
+   }
+
+   private boolean bringOffsetAboveBottomOverlay(int offset, int bottomMargin, boolean smooth) {
+      if (bottomOverlayInset <= 0) {
+         return super.bringPointIntoView(offset);
+      }
+      android.text.Layout layout = getLayout();
+      Editable text = getText();
+      if (layout == null || text == null) {
+         return super.bringPointIntoView(offset);
+      }
+
+      int safeOffset = Math.max(0, Math.min(offset, text.length()));
+      int line = layout.getLineForOffset(safeOffset);
+      int visibleBottomOffset = Math.max(1, getHeight() - getCompoundPaddingBottom() - bottomOverlayInset - Math.max(0, bottomMargin));
+      int currentX = getScrollX();
+      int currentY = getScrollY();
+      int targetX = pointScrollX(layout.getPrimaryHorizontal(safeOffset), currentX);
+      int targetY = currentY;
+      int lineTop = layout.getLineTop(line) + getCompoundPaddingTop();
+      int lineBottom = layout.getLineBottom(line) + getCompoundPaddingTop();
+      if (lineTop < currentY) {
+         targetY = lineTop;
+      } else if (lineBottom > currentY + visibleBottomOffset) {
+         targetY = lineBottom - visibleBottomOffset;
+      }
+
+      return smooth ? smoothScrollToEditorBounds(targetX, targetY) : scrollToEditorBounds(targetX, targetY);
+   }
+
+   @Override
+   protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+      super.onLayout(changed, left, top, right, bottom);
+      if (changed) {
+         int maxY = maxScrollY();
+         if (externalResize) {
+            restoreExternalResizeScroll(maxY);
+         } else {
+            int maxX = maxScrollX();
+            int currentX = getScrollX();
+            int currentY = getScrollY();
+            if (currentX > maxX || currentY > maxY) {
+               scrollTo(Math.min(currentX, maxX), Math.min(currentY, maxY));
+            }
+         }
+      }
    }
 
    @Override
@@ -220,17 +474,30 @@ final class CodeEditorView extends EditText {
    }
 
    @Override
-   protected void onSelectionChanged(int selectionStart, int selectionEnd) {
-      super.onSelectionChanged(selectionStart, selectionEnd);
-      if (selectionStart != selectionEnd) {
-         lockSelectionScroll();
-      } else {
-         selectionScrollLocked = false;
+   protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+      super.onSizeChanged(w, h, oldw, oldh);
+      if (w != oldw) {
+         invalidateScrollXBounds();
+      }
+      if (h != oldh) {
+         invalidateScrollYBounds();
       }
    }
 
+   @Override
+   public void setPadding(int left, int top, int right, int bottom) {
+      super.setPadding(left, top, right, bottom);
+      invalidateScrollBounds();
+   }
+
+   @Override
+   public void setPaddingRelative(int start, int top, int end, int bottom) {
+      super.setPaddingRelative(start, top, end, bottom);
+      invalidateScrollBounds();
+   }
+
    void setCode(String code) {
-      historyHandler.removeCallbacks(commitHistoryRunnable);
+      mainHandler.removeCallbacks(commitHistoryRunnable);
       editingHistory = true;
       setText(code);
       setSelection(getText().length());
@@ -238,7 +505,8 @@ final class CodeEditorView extends EditText {
       redoStack.clear();
       pendingState = null;
       editingHistory = false;
-      highlight(getText());
+      highlighter.applyFullHighlight(getText());
+      invalidateScrollBounds();
    }
 
    String code() {
@@ -247,6 +515,7 @@ final class CodeEditorView extends EditText {
 
    void setEditorFontSizeSp(int sizeSp) {
       setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp);
+      invalidateScrollBounds();
    }
 
    void setTabSize(int tabSize) {
@@ -257,6 +526,55 @@ final class CodeEditorView extends EditText {
       autoClosePairs = enabled;
    }
 
+   void setBottomOverlayInset(int inset) {
+      int safeInset = Math.max(0, inset);
+      if (bottomOverlayInset == safeInset) {
+         return;
+      }
+      bottomOverlayInset = safeInset;
+      invalidateScrollYBounds();
+      if (externalResize) {
+         if (externalResizeTracksOverlayBounds) {
+            restoreExternalResizeScroll(maxScrollX(), maxScrollY());
+         }
+      } else if (!isNativeSelectionActive()) {
+         clampCurrentScroll();
+      }
+      awakenScrollBars();
+   }
+
+   void setExternalResize(boolean externalResize) {
+      if (externalResize) {
+         externalResizeGeneration++;
+         if (!this.externalResize) {
+            externalResizeScrollX = getScrollX();
+            externalResizeScrollY = getScrollY();
+            flingScroller.abortAnimation();
+         }
+         this.externalResize = true;
+         return;
+      }
+
+      if (!this.externalResize) {
+         return;
+      }
+      int generation = ++externalResizeGeneration;
+      postOnAnimation(() -> postOnAnimation(() -> {
+         if (externalResizeGeneration == generation) {
+            restoreExternalResizeScroll(maxScrollX(), maxScrollY());
+            this.externalResize = false;
+            externalResizeTracksOverlayBounds = false;
+         }
+      }));
+   }
+
+   void setExternalResizeTracksOverlayBounds(boolean tracksOverlayBounds) {
+      externalResizeTracksOverlayBounds = tracksOverlayBounds;
+      if (externalResize && tracksOverlayBounds) {
+         restoreExternalResizeScroll(maxScrollX(), maxScrollY());
+      }
+   }
+
    void formatCodeInPlace() {
       String formatted = formatCode(code(), tabSize);
       if (!formatted.equals(code())) {
@@ -265,25 +583,29 @@ final class CodeEditorView extends EditText {
    }
 
    boolean applyFormattedCode(String formatted) {
-      if (formatted == null) {
+      return applyEditedCode(formatted, Math.max(0, getSelectionStart()));
+   }
+
+   boolean applyEditedCode(String edited, int selection) {
+      if (edited == null) {
          return false;
       }
       String current = code();
-      if (formatted.equals(current)) {
+      if (edited.equals(current)) {
          return false;
       }
       commitPendingHistory();
       undoStack.push(new EditState(current, Math.max(0, getSelectionStart())));
       redoStack.clear();
-      historyHandler.removeCallbacks(commitHistoryRunnable);
+      mainHandler.removeCallbacks(commitHistoryRunnable);
       editingHistory = true;
       Editable editable = getText();
-      editable.replace(0, editable.length(), formatted);
-      int selection = Math.max(0, Math.min(getSelectionStart(), editable.length()));
-      setSelection(selection);
+      editable.replace(0, editable.length(), edited);
+      setSelection(Math.max(0, Math.min(selection, editable.length())));
       pendingState = null;
       editingHistory = false;
-      highlight(editable);
+      highlighter.applyFullHighlight(editable);
+      invalidateScrollBounds();
       return true;
    }
 
@@ -317,6 +639,106 @@ final class CodeEditorView extends EditText {
       undoStack.push(current);
       applyState(target);
       return true;
+   }
+
+   private void invalidateScrollBounds() {
+      invalidateScrollXBounds();
+      invalidateScrollYBounds();
+   }
+
+   private void invalidateScrollXBounds() {
+      cachedMaxScrollX = -1;
+   }
+
+   private void invalidateScrollYBounds() {
+      cachedMaxScrollY = -1;
+   }
+
+   private boolean clampCurrentScroll() {
+      return scrollToEditorBounds(getScrollX(), getScrollY());
+   }
+
+   private int pointScrollX(float pointX, int currentX) {
+      int visibleWidth = Math.max(1, getWidth() - getTotalPaddingLeft() - getTotalPaddingRight());
+      if (pointX < currentX) {
+         return (int) Math.floor(pointX);
+      }
+      if (pointX > currentX + visibleWidth) {
+         return (int) Math.ceil(pointX) - visibleWidth;
+      }
+      return currentX;
+   }
+
+   private boolean scrollToEditorBounds(int x, int y) {
+      int currentX = getScrollX();
+      int currentY = getScrollY();
+      int maxX = maxScrollX();
+      int maxY = maxScrollY();
+      int clampedX = x < 0 ? 0 : (x > maxX ? maxX : x);
+      int clampedY = y < 0 ? 0 : (y > maxY ? maxY : y);
+      if (currentX != clampedX || currentY != clampedY) {
+         super.scrollTo(clampedX, clampedY);
+         return true;
+      }
+      return false;
+   }
+
+   private boolean smoothScrollToEditorBounds(int x, int y) {
+      int currentX = getScrollX();
+      int currentY = getScrollY();
+      int maxX = maxScrollX();
+      int maxY = maxScrollY();
+      int clampedX = x < 0 ? 0 : (x > maxX ? maxX : x);
+      int clampedY = y < 0 ? 0 : (y > maxY ? maxY : y);
+      if (currentX == clampedX && currentY == clampedY) {
+         return false;
+      }
+      flingScroller.abortAnimation();
+      flingScroller.startScroll(
+         currentX,
+         currentY,
+         clampedX - currentX,
+         clampedY - currentY,
+         SELECTION_REVEAL_SCROLL_DURATION_MS
+      );
+      postInvalidateOnAnimation();
+      return true;
+   }
+
+   private void restoreTouchScrollAfterPointerPlacement() {
+      if (bottomOverlayInset <= 0) {
+         return;
+      }
+      scrollToEditorBounds(touchStartScrollX, touchStartScrollY);
+      postOnAnimation(() -> scrollToEditorBounds(touchStartScrollX, touchStartScrollY));
+   }
+
+   private void lockTouchSelectionScroll() {
+      if (bottomOverlayInset <= 0 || !touchGestureActive) {
+         return;
+      }
+      if (!selectionScrollLocked) {
+         selectionLockScrollX = touchStartScrollX;
+         selectionLockScrollY = touchStartScrollY;
+         selectionScrollLocked = true;
+      }
+      postOnAnimation(() -> scrollToEditorBounds(selectionLockScrollX, selectionLockScrollY));
+   }
+
+   private void restoreExternalResizeScroll(int maxX, int maxY) {
+      super.scrollTo(
+         Math.max(0, Math.min(externalResizeScrollX, maxX)),
+         Math.max(0, Math.min(externalResizeScrollY, maxY))
+      );
+   }
+
+   private void restoreExternalResizeScroll() {
+      restoreExternalResizeScroll(maxScrollY());
+   }
+
+   private void restoreExternalResizeScroll(int maxY) {
+      int maxX = cachedMaxScrollX >= 0 ? cachedMaxScrollX : Math.max(externalResizeScrollX, getScrollX());
+      restoreExternalResizeScroll(maxX, maxY);
    }
 
    private void insertNewLineWithIndent() {
@@ -389,7 +811,10 @@ final class CodeEditorView extends EditText {
 
    @Override
    protected void onDetachedFromWindow() {
-      historyHandler.removeCallbacks(commitHistoryRunnable);
+      mainHandler.removeCallbacks(commitHistoryRunnable);
+      highlighter.cancel();
+      flingScroller.abortAnimation();
+      recycleVelocityTracker();
       super.onDetachedFromWindow();
    }
 
@@ -397,12 +822,12 @@ final class CodeEditorView extends EditText {
       if (editingHistory || pendingState == null) {
          return;
       }
-      historyHandler.removeCallbacks(commitHistoryRunnable);
-      historyHandler.postDelayed(commitHistoryRunnable, HISTORY_SNAPSHOT_DELAY_MS);
+      mainHandler.removeCallbacks(commitHistoryRunnable);
+      mainHandler.postDelayed(commitHistoryRunnable, HISTORY_SNAPSHOT_DELAY_MS);
    }
 
    private void commitPendingHistory() {
-      historyHandler.removeCallbacks(commitHistoryRunnable);
+      mainHandler.removeCallbacks(commitHistoryRunnable);
       if (editingHistory || pendingState == null) {
          return;
       }
@@ -419,35 +844,16 @@ final class CodeEditorView extends EditText {
       setText(state.text);
       setSelection(Math.max(0, Math.min(state.selection, getText().length())));
       editingHistory = false;
-      highlight(getText());
-   }
-
-   private void lockSelectionScroll() {
-      if (!selectionScrollLocked) {
-         selectionLockScrollX = getScrollX();
-         selectionLockScrollY = getScrollY();
-         selectionScrollLocked = true;
-      }
-      hideKeyboard();
-      post(() -> scrollTo(selectionLockScrollX, selectionLockScrollY));
+      highlighter.applyFullHighlight(getText());
+      invalidateScrollBounds();
    }
 
    private String pairFor(char typed) {
-      if (typed == '(') {
-         return ")";
-      }
-      if (typed == '[') {
-         return "]";
-      }
-      if (typed == '{') {
-         return "}";
-      }
-      if (typed == '"') {
-         return "\"";
-      }
-      if (typed == '\'') {
-         return "'";
-      }
+      if (typed == '(') return ")";
+      if (typed == '[') return "]";
+      if (typed == '{') return "}";
+      if (typed == '"') return "\"";
+      if (typed == '\'') return "'";
       return "";
    }
 
@@ -558,29 +964,6 @@ final class CodeEditorView extends EditText {
       return value.substring(start);
    }
 
-   private void highlight(Editable editable) {
-      if (highlighting) {
-         return;
-      }
-      highlighting = true;
-      ForegroundColorSpan[] spans = editable.getSpans(0, editable.length(), ForegroundColorSpan.class);
-      for (ForegroundColorSpan span : spans) {
-         editable.removeSpan(span);
-      }
-
-      for (EditorTheme.SyntaxRule rule : theme.syntaxRules) {
-         apply(editable, rule);
-      }
-      highlighting = false;
-   }
-
-   private void apply(Editable editable, EditorTheme.SyntaxRule rule) {
-      Matcher matcher = rule.pattern.matcher(editable);
-      while (matcher.find()) {
-         editable.setSpan(new ForegroundColorSpan(rule.color), matcher.start(), matcher.end(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-      }
-   }
-
    private int dp(int value) {
       return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, getResources().getDisplayMetrics()));
    }
@@ -595,7 +978,6 @@ final class CodeEditorView extends EditText {
       if (Math.abs(velocityX) < minimumFlingVelocity && Math.abs(velocityY) < minimumFlingVelocity) {
          return;
       }
-
       flingScroller.fling(
          getScrollX(),
          getScrollY(),
@@ -610,29 +992,61 @@ final class CodeEditorView extends EditText {
    }
 
    private int maxScrollX() {
-      Layout layout = getLayout();
-      if (layout == null) {
-         return 0;
+      if (cachedMaxScrollX >= 0) {
+         return cachedMaxScrollX;
+      }
+      float maxLineWidth = maxMonospaceLineWidth();
+      int viewportWidth = getWidth() - getTotalPaddingLeft() - getTotalPaddingRight();
+      cachedMaxScrollX = Math.max(0, (int) Math.ceil(maxLineWidth) - Math.max(0, viewportWidth));
+      return cachedMaxScrollX;
+   }
+
+   private float maxMonospaceLineWidth() {
+      CharSequence text = getText();
+      if (text == null || text.length() == 0) {
+         return 0f;
       }
 
-      float maxLineWidth = 0f;
-      for (int i = 0; i < layout.getLineCount(); i++) {
-         maxLineWidth = Math.max(maxLineWidth, layout.getLineWidth(i));
+      float columnWidth = getPaint().measureText("m");
+      if (columnWidth <= 0f) {
+         return 0f;
       }
-      int effectiveRightPadding = Math.min(getTotalPaddingRight(), dp(12));
-      int contentWidth = Math.round(maxLineWidth) + getTotalPaddingLeft() + effectiveRightPadding;
-      return Math.max(0, contentWidth - getWidth());
+
+      int currentColumns = 0;
+      int maxColumns = 0;
+      for (int i = 0; i < text.length(); i++) {
+         char c = text.charAt(i);
+         if (c == '\n') {
+            if (currentColumns > maxColumns) {
+               maxColumns = currentColumns;
+            }
+            currentColumns = 0;
+         } else if (c == '\t') {
+            int spaces = tabSize - (currentColumns % tabSize);
+            currentColumns += spaces <= 0 ? tabSize : spaces;
+         } else {
+            currentColumns++;
+         }
+      }
+      if (currentColumns > maxColumns) {
+         maxColumns = currentColumns;
+      }
+      return maxColumns * columnWidth;
    }
 
    private int maxScrollY() {
-      Layout layout = getLayout();
+      if (cachedMaxScrollY >= 0) {
+         return cachedMaxScrollY;
+      }
+      android.text.Layout layout = getLayout();
       if (layout == null) {
          return 0;
       }
       int lastLine = Math.max(0, layout.getLineCount() - 1);
-      int effectiveBottomPadding = Math.min(getTotalPaddingBottom(), getLineHeight() + dp(4));
-      int contentHeight = layout.getLineBottom(lastLine) + getTotalPaddingTop() + effectiveBottomPadding;
-      return Math.max(0, contentHeight - getHeight());
+      // Total padding contains EditText's expanded empty area; only content padding belongs in scroll bounds.
+      int contentHeight = layout.getLineBottom(lastLine) + getCompoundPaddingTop() + getCompoundPaddingBottom() + bottomOverlayInset;
+      cachedMaxScrollY = Math.max(0, contentHeight - getHeight());
+      return cachedMaxScrollY;
    }
 
    private void ensureVelocityTracker() {
@@ -649,21 +1063,198 @@ final class CodeEditorView extends EditText {
    }
 
    private void showKeyboard() {
-      InputMethodManager inputMethodManager = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-      if (inputMethodManager != null) {
-         post(() -> inputMethodManager.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT));
+      InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+      if (imm != null) {
+         post(() -> imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT));
       }
    }
 
-   private void hideKeyboard() {
-      InputMethodManager inputMethodManager = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-      if (inputMethodManager != null) {
-         inputMethodManager.hideSoftInputFromWindow(getWindowToken(), 0);
-      }
-   }
+   /**
+    * Incremental, debounced syntax highlighter.
+    *
+    * Re-highlighting whole lines around a dirty region avoids re-scanning the entire document
+    * on every keystroke. Block comments can span lines, so documents that contain one of their
+    * delimiters need a full pass after edits.
+    */
+   private final class IncrementalHighlighter {
+      private EditorTheme theme;
+      private final SparseArray<ArrayDeque<ForegroundColorSpan>> spanPool = new SparseArray<>();
+      private final Runnable highlightRunnable = this::runScheduledHighlight;
 
-   private int clamp(int value, int min, int max) {
-      return Math.max(min, Math.min(max, value));
+      private int dirtyStart = -1;
+      private int dirtyEnd = -1;
+      private boolean fullPending;
+      private boolean applying;
+      private Editable scheduledTarget;
+
+      IncrementalHighlighter(EditorTheme theme) {
+         this.theme = theme;
+      }
+
+      void applyTheme(EditorTheme theme) {
+         this.theme = theme;
+      }
+
+      void markDirty(int start, int end) {
+         if (applying) return;
+         if (start < 0) start = 0;
+         if (end < start) end = start;
+         if (dirtyStart < 0) {
+            dirtyStart = start;
+            dirtyEnd = end;
+         } else {
+            if (start < dirtyStart) dirtyStart = start;
+            if (end > dirtyEnd) dirtyEnd = end;
+         }
+      }
+
+      void scheduleHighlight(Editable editable) {
+         if (applying) return;
+         scheduledTarget = editable;
+         if (dirtyStart < 0) {
+            return;
+         }
+         int dirtyLen = dirtyEnd - dirtyStart;
+         if (dirtyLen >= FULL_HIGHLIGHT_THRESHOLD || dirtyLen >= editable.length() / 2 || containsBlockCommentDelimiter(editable)) {
+            fullPending = true;
+         }
+         mainHandler.removeCallbacks(highlightRunnable);
+         mainHandler.postDelayed(highlightRunnable, HIGHLIGHT_DEBOUNCE_MS);
+      }
+
+      void applyFullHighlight(Editable editable) {
+         mainHandler.removeCallbacks(highlightRunnable);
+         dirtyStart = -1;
+         dirtyEnd = -1;
+         fullPending = false;
+         scheduledTarget = null;
+         applyRange(editable, 0, editable.length(), true);
+      }
+
+      void cancel() {
+         mainHandler.removeCallbacks(highlightRunnable);
+         dirtyStart = -1;
+         dirtyEnd = -1;
+         fullPending = false;
+         scheduledTarget = null;
+      }
+
+      private void runScheduledHighlight() {
+         Editable editable = scheduledTarget;
+         scheduledTarget = null;
+         if (editable == null) return;
+         int len = editable.length();
+         if (len == 0) {
+            dirtyStart = -1;
+            dirtyEnd = -1;
+            fullPending = false;
+            return;
+         }
+         if (fullPending) {
+            applyRange(editable, 0, len, true);
+            dirtyStart = -1;
+            dirtyEnd = -1;
+            fullPending = false;
+            return;
+         }
+         if (dirtyStart < 0) return;
+
+         int start = expandToLineStart(editable, Math.max(0, Math.min(dirtyStart, len)));
+         int end = expandToLineEnd(editable, Math.max(start, Math.min(dirtyEnd, len)));
+         dirtyStart = -1;
+         dirtyEnd = -1;
+         applyRange(editable, start, end, false);
+      }
+
+      private void applyRange(Editable editable, int start, int end, boolean fullRescan) {
+         if (start < 0) start = 0;
+         if (end > editable.length()) end = editable.length();
+         if (end <= start) return;
+         applying = true;
+         try {
+            ForegroundColorSpan[] existing = editable.getSpans(start, end, ForegroundColorSpan.class);
+            for (ForegroundColorSpan span : existing) {
+               int spanStart = editable.getSpanStart(span);
+               int spanEnd = editable.getSpanEnd(span);
+               if (spanStart >= start && spanEnd <= end) {
+                  editable.removeSpan(span);
+                  recycle(span);
+               } else {
+                  editable.removeSpan(span);
+                  recycle(span);
+               }
+            }
+            for (EditorTheme.SyntaxRule rule : theme.syntaxRules) {
+               applyRule(editable, rule, start, end, fullRescan);
+            }
+         } finally {
+            applying = false;
+         }
+      }
+
+      private void applyRule(Editable editable, EditorTheme.SyntaxRule rule, int start, int end, boolean fullRescan) {
+         Matcher matcher = rule.pattern.matcher(editable);
+         if (!fullRescan) {
+            matcher.region(start, end);
+            matcher.useAnchoringBounds(false);
+            matcher.useTransparentBounds(true);
+         }
+         while (matcher.find()) {
+            int mStart = matcher.start();
+            int mEnd = matcher.end();
+            if (mEnd <= mStart) continue;
+            ForegroundColorSpan span = obtain(rule.color);
+            editable.setSpan(span, mStart, mEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+         }
+      }
+
+      private int expandToLineStart(CharSequence text, int index) {
+         int i = Math.max(0, Math.min(index, text.length()));
+         while (i > 0 && text.charAt(i - 1) != '\n') {
+            i--;
+         }
+         return i;
+      }
+
+      private int expandToLineEnd(CharSequence text, int index) {
+         int i = Math.max(0, Math.min(index, text.length()));
+         int len = text.length();
+         while (i < len && text.charAt(i) != '\n') {
+            i++;
+         }
+         return i;
+      }
+
+      private boolean containsBlockCommentDelimiter(CharSequence text) {
+         for (int i = 1; i < text.length(); i++) {
+            char previous = text.charAt(i - 1);
+            char current = text.charAt(i);
+            if ((previous == '/' && current == '*') || (previous == '*' && current == '/')) {
+               return true;
+            }
+         }
+         return false;
+      }
+
+      private ForegroundColorSpan obtain(int color) {
+         ArrayDeque<ForegroundColorSpan> pool = spanPool.get(color);
+         if (pool != null && !pool.isEmpty()) {
+            return pool.pop();
+         }
+         return new ForegroundColorSpan(color);
+      }
+
+      private void recycle(ForegroundColorSpan span) {
+         int color = span.getForegroundColor();
+         ArrayDeque<ForegroundColorSpan> pool = spanPool.get(color);
+         if (pool == null) {
+            pool = new ArrayDeque<>(16);
+            spanPool.put(color, pool);
+         }
+         if (pool.size() < 256) {
+            pool.push(span);
+         }
+      }
    }
 
    private static final class EditState {
@@ -804,22 +1395,10 @@ final class CodeEditorView extends EditText {
       }
 
       private void writeSymbol(String symbol) {
-         if ("}".equals(symbol)) {
-            writeClosingBrace();
-            return;
-         }
-         if ("{".equals(symbol)) {
-            writeOpeningBrace();
-            return;
-         }
-         if (";".equals(symbol)) {
-            writeSemicolon();
-            return;
-         }
-         if (",".equals(symbol)) {
-            writeComma();
-            return;
-         }
+         if ("}".equals(symbol)) { writeClosingBrace(); return; }
+         if ("{".equals(symbol)) { writeOpeningBrace(); return; }
+         if (";".equals(symbol)) { writeSemicolon(); return; }
+         if (",".equals(symbol)) { writeComma(); return; }
          if ("(".equals(symbol)) {
             ensureLineStarted();
             trimTrailingSpaces(out);
@@ -992,15 +1571,9 @@ final class CodeEditorView extends EditText {
       }
 
       private boolean needsSpaceBeforeWord(String text) {
-         if (startOfLine) {
-            return false;
-         }
-         if (pendingSpace) {
-            return true;
-         }
-         if (previousToken == null) {
-            return false;
-         }
+         if (startOfLine) return false;
+         if (pendingSpace) return true;
+         if (previousToken == null) return false;
          if (previousToken.type == TokenType.WORD || previousToken.type == TokenType.NUMBER
             || previousToken.type == TokenType.STRING || previousToken.type == TokenType.CHAR) {
             return true;
@@ -1036,9 +1609,7 @@ final class CodeEditorView extends EditText {
 
       private void ensureLineStarted() {
          if (!startOfLine) {
-            if (pendingSpace) {
-               writeSpace();
-            }
+            if (pendingSpace) writeSpace();
             return;
          }
          appendIndent(out, indentLevel, unit);
@@ -1077,9 +1648,7 @@ final class CodeEditorView extends EditText {
       }
 
       private boolean isPostfixUnary(String symbol) {
-         if (!"++".equals(symbol) && !"--".equals(symbol)) {
-            return false;
-         }
+         if (!"++".equals(symbol) && !"--".equals(symbol)) return false;
          return previousToken != null
             && (previousToken.type == TokenType.WORD
             || previousToken.type == TokenType.NUMBER
@@ -1096,9 +1665,7 @@ final class CodeEditorView extends EditText {
             if (line.startsWith("*") && line.length() > 1 && line.charAt(1) != ' ') {
                line = "* " + line.substring(1).trim();
             }
-            if (i > 0) {
-               builder.append('\n');
-            }
+            if (i > 0) builder.append('\n');
             builder.append(line);
          }
          return builder.toString();
@@ -1115,9 +1682,7 @@ final class CodeEditorView extends EditText {
                int start = i;
                int newlineCount = 0;
                while (i < source.length() && Character.isWhitespace(source.charAt(i))) {
-                  if (source.charAt(i) == '\n') {
-                     newlineCount++;
-                  }
+                  if (source.charAt(i) == '\n') newlineCount++;
                   i++;
                }
                if (newlineCount >= 2) {
@@ -1129,9 +1694,7 @@ final class CodeEditorView extends EditText {
             if (c == '/' && next == '/') {
                int start = i;
                i += 2;
-               while (i < source.length() && source.charAt(i) != '\n') {
-                  i++;
-               }
+               while (i < source.length() && source.charAt(i) != '\n') i++;
                result.add(new Token(TokenType.LINE_COMMENT, source.substring(start, i)));
                continue;
             }
@@ -1147,19 +1710,21 @@ final class CodeEditorView extends EditText {
                continue;
             }
 
+            if (isHexColorLiteral(source, i)) {
+               result.add(new Token(TokenType.NUMBER, source.substring(i, i + 7)));
+               i += 7;
+               continue;
+            }
+
             if (c == '"' || c == '\'') {
                char quote = c;
                int start = i++;
                boolean escaping = false;
                while (i < source.length()) {
                   char current = source.charAt(i++);
-                  if (escaping) {
-                     escaping = false;
-                  } else if (current == '\\') {
-                     escaping = true;
-                  } else if (current == quote) {
-                     break;
-                  }
+                  if (escaping) escaping = false;
+                  else if (current == '\\') escaping = true;
+                  else if (current == quote) break;
                }
                result.add(new Token(quote == '"' ? TokenType.STRING : TokenType.CHAR, source.substring(start, i)));
                continue;
@@ -1169,11 +1734,8 @@ final class CodeEditorView extends EditText {
                int start = i++;
                while (i < source.length()) {
                   char current = source.charAt(i);
-                  if (Character.isLetterOrDigit(current) || current == '_' || current == '$') {
-                     i++;
-                  } else {
-                     break;
-                  }
+                  if (Character.isLetterOrDigit(current) || current == '_' || current == '$') i++;
+                  else break;
                }
                result.add(new Token(TokenType.WORD, source.substring(start, i)));
                continue;
@@ -1183,11 +1745,8 @@ final class CodeEditorView extends EditText {
                int start = i++;
                while (i < source.length()) {
                   char current = source.charAt(i);
-                  if (Character.isLetterOrDigit(current) || current == '.' || current == '_') {
-                     i++;
-                  } else {
-                     break;
-                  }
+                  if (Character.isLetterOrDigit(current) || current == '.' || current == '_') i++;
+                  else break;
                }
                result.add(new Token(TokenType.NUMBER, source.substring(start, i)));
                continue;
@@ -1200,6 +1759,23 @@ final class CodeEditorView extends EditText {
          return result;
       }
 
+      private static boolean isHexColorLiteral(String source, int index) {
+         if (source.charAt(index) != '#' || index + 7 > source.length()) {
+            return false;
+         }
+         for (int i = index + 1; i < index + 7; i++) {
+            char c = source.charAt(i);
+            if (!Character.isDigit(c) && (Character.toLowerCase(c) < 'a' || Character.toLowerCase(c) > 'f')) {
+               return false;
+            }
+         }
+         if (index + 7 == source.length()) {
+            return true;
+         }
+         char next = source.charAt(index + 7);
+         return !Character.isLetterOrDigit(next) && next != '_' && next != '$';
+      }
+
       private static String readOperator(String source, int index) {
          String[] operators = {
             ">>>=", "<<=", ">>=", "==", "!=", "<=", ">=", "&&", "||", "++", "--",
@@ -1207,24 +1783,14 @@ final class CodeEditorView extends EditText {
             ">>>"
          };
          for (String operator : operators) {
-            if (source.startsWith(operator, index)) {
-               return operator;
-            }
+            if (source.startsWith(operator, index)) return operator;
          }
          return String.valueOf(source.charAt(index));
       }
    }
 
    private enum TokenType {
-      WORD,
-      NUMBER,
-      STRING,
-      CHAR,
-      LINE_COMMENT,
-      BLOCK_COMMENT,
-      BLANK_LINE,
-      SYMBOL,
-      WHITESPACE
+      WORD, NUMBER, STRING, CHAR, LINE_COMMENT, BLOCK_COMMENT, BLANK_LINE, SYMBOL, WHITESPACE
    }
 
    private static final class Token {

@@ -1,0 +1,39 @@
+plugins {
+   id "com.android.application"
+   id "org.jetbrains.kotlin.android"
+}
+
+android {
+   namespace "com.apde2.sketchpreview"
+   compileSdk 35
+
+   defaultConfig {
+      applicationId "com.apde2.sketchpreview"
+      minSdk 26
+      targetSdk 35
+      versionCode 10
+      versionName "0.1.9"
+   }
+
+   compileOptions {
+      sourceCompatibility JavaVersion.VERSION_17
+      targetCompatibility JavaVersion.VERSION_17
+   }
+}
+
+preBuild.dependsOn(":app:prepareSketchPreviewToolchain")
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+   kotlinOptions {
+      jvmTarget = "17"
+   }
+}
+
+dependencies {
+   implementation "androidx.fragment:fragment-ktx:1.8.5"
+   implementation "androidx.core:core-ktx:1.13.1"
+   // processing-core is copied from Android Mode as a bare jar, so restore its runtime dependencies.
+   implementation "androidx.legacy:legacy-support-v4:1.0.0"
+   implementation "com.google.android.support:wearable:2.9.0"
+   implementation files("../app/build/generated/assets/sketchPreviewToolchain/toolchains/processing-android/processing-core.jar")
+}

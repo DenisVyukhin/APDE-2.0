@@ -5,3 +5,16 @@ local.properties
 .idea/
 *.iml
 .DS_Store
+
+# Local secrets and signing material
+.env
+.env.*
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+keystore.properties
+secrets.properties
+google-services.json
+service-account*.json

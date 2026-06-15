@@ -1,0 +1,558 @@
+{
+   "schemaVersion": 1,
+   "defaultTheme": "dark",
+   "themes": [
+      {
+         "id": "dark",
+         "name": "Dark",
+         "colors": {
+            "ui": {
+               "background": "#0D1117",
+               "surface": "#161B22",
+               "surfaceSoft": "#0D1117",
+               "border": "#30363D",
+               "scrim": "#6E000000",
+               "text": "#C9D1D9",
+               "textMuted": "#8B949E",
+               "accent": "#3FB950",
+               "codeAccent": "#58A6FF",
+               "error": "#F85149"
+            },
+            "actions": {
+               "play": "#3FB950",
+               "stop": "#F85149"
+            },
+            "editor": {
+               "selection": "#388BFD",
+               "currentLine": "#161B22"
+            },
+            "widgets": {
+               "colorPickerBorder": "#30363D",
+               "colorPickerThumb": "#FFFFFF",
+               "colorPickerThumbStroke": "#8C000000",
+               "hueSliderMarker": "#FFFFFF",
+               "hueSliderMarkerStroke": "#96000000",
+               "runnerBackground": "#000000",
+               "runnerEmptyBackground": "#121419"
+            },
+            "syntax": {
+               "keyword": "#D2A8FF",
+               "type": "#D2A8FF",
+               "processing": "#58A6FF",
+               "runtimeValue": "#79C0FF",
+               "constant": "#FF7B72",
+               "number": "#FFA657",
+               "string": "#7EE787",
+               "comment": "#8B949E",
+               "operator": "#79C0FF"
+            }
+         }
+      },
+      {
+         "id": "light",
+         "name": "Light",
+         "colors": {
+            "ui": {
+               "background": "#F6F8FA",
+               "surface": "#FFFFFF",
+               "surfaceSoft": "#EEF2F6",
+               "border": "#D0D7DE",
+               "scrim": "#66000000",
+               "text": "#24292F",
+               "textMuted": "#57606A",
+               "accent": "#1A7F37",
+               "codeAccent": "#0969DA",
+               "error": "#CF222E"
+            },
+            "actions": {
+               "play": "#1A7F37",
+               "stop": "#CF222E"
+            },
+            "editor": {
+               "selection": "#BFDBFE",
+               "currentLine": "#EEF2F6"
+            },
+            "widgets": {
+               "colorPickerBorder": "#D0D7DE",
+               "colorPickerThumb": "#FFFFFF",
+               "colorPickerThumbStroke": "#8C000000",
+               "hueSliderMarker": "#FFFFFF",
+               "hueSliderMarkerStroke": "#96000000",
+               "runnerBackground": "#FFFFFF",
+               "runnerEmptyBackground": "#EEF2F6"
+            },
+            "syntax": {
+               "keyword": "#8250DF",
+               "type": "#8250DF",
+               "processing": "#0969DA",
+               "runtimeValue": "#0550AE",
+               "constant": "#CF222E",
+               "number": "#BC4C00",
+               "string": "#116329",
+               "comment": "#6E7781",
+               "operator": "#0550AE"
+            }
+         }
+      },
+      {
+         "id": "one_dark_pro",
+         "name": "One Dark Pro",
+         "colors": {
+            "ui": {
+               "background": "#282C34",
+               "surface": "#21252B",
+               "surfaceSoft": "#2C313A",
+               "border": "#3E4451",
+               "scrim": "#7A000000",
+               "text": "#ABB2BF",
+               "textMuted": "#5C6370",
+               "accent": "#61AFEF",
+               "codeAccent": "#61AFEF",
+               "error": "#E06C75"
+            },
+            "actions": {
+               "play": "#98C379",
+               "stop": "#E06C75"
+            },
+            "editor": {
+               "selection": "#3E4451",
+               "currentLine": "#2C313A"
+            },
+            "widgets": {
+               "colorPickerBorder": "#3E4451",
+               "colorPickerThumb": "#FFFFFF",
+               "colorPickerThumbStroke": "#8C000000",
+               "hueSliderMarker": "#FFFFFF",
+               "hueSliderMarkerStroke": "#96000000",
+               "runnerBackground": "#21252B",
+               "runnerEmptyBackground": "#282C34"
+            },
+            "syntax": {
+               "keyword": "#C678DD",
+               "type": "#E5C07B",
+               "processing": "#61AFEF",
+               "runtimeValue": "#56B6C2",
+               "constant": "#D19A66",
+               "number": "#D19A66",
+               "string": "#98C379",
+               "comment": "#5C6370",
+               "operator": "#56B6C2"
+            }
+         }
+      },
+      {
+         "id": "dracula_official",
+         "name": "Dracula Official",
+         "colors": {
+            "ui": {
+               "background": "#282A36",
+               "surface": "#21222C",
+               "surfaceSoft": "#343746",
+               "border": "#44475A",
+               "scrim": "#7A000000",
+               "text": "#F8F8F2",
+               "textMuted": "#6272A4",
+               "accent": "#BD93F9",
+               "codeAccent": "#8BE9FD",
+               "error": "#FF5555"
+            },
+            "actions": {
+               "play": "#50FA7B",
+               "stop": "#FF5555"
+            },
+            "editor": {
+               "selection": "#44475A",
+               "currentLine": "#44475A"
+            },
+            "widgets": {
+               "colorPickerBorder": "#44475A",
+               "colorPickerThumb": "#FFFFFF",
+               "colorPickerThumbStroke": "#8C000000",
+               "hueSliderMarker": "#FFFFFF",
+               "hueSliderMarkerStroke": "#96000000",
+               "runnerBackground": "#21222C",
+               "runnerEmptyBackground": "#282A36"
+            },
+            "syntax": {
+               "keyword": "#FF79C6",
+               "type": "#8BE9FD",
+               "processing": "#BD93F9",
+               "runtimeValue": "#8BE9FD",
+               "constant": "#BD93F9",
+               "number": "#BD93F9",
+               "string": "#F1FA8C",
+               "comment": "#6272A4",
+               "operator": "#FF79C6"
+            }
+         }
+      },
+      {
+         "id": "github_dark",
+         "name": "GitHub Dark",
+         "colors": {
+            "ui": {
+               "background": "#0D1117",
+               "surface": "#161B22",
+               "surfaceSoft": "#21262D",
+               "border": "#30363D",
+               "scrim": "#6E000000",
+               "text": "#C9D1D9",
+               "textMuted": "#8B949E",
+               "accent": "#58A6FF",
+               "codeAccent": "#58A6FF",
+               "error": "#F85149"
+            },
+            "actions": {
+               "play": "#3FB950",
+               "stop": "#F85149"
+            },
+            "editor": {
+               "selection": "#264F78",
+               "currentLine": "#161B22"
+            },
+            "widgets": {
+               "colorPickerBorder": "#30363D",
+               "colorPickerThumb": "#FFFFFF",
+               "colorPickerThumbStroke": "#8C000000",
+               "hueSliderMarker": "#FFFFFF",
+               "hueSliderMarkerStroke": "#96000000",
+               "runnerBackground": "#0D1117",
+               "runnerEmptyBackground": "#161B22"
+            },
+            "syntax": {
+               "keyword": "#FF7B72",
+               "type": "#D2A8FF",
+               "processing": "#79C0FF",
+               "runtimeValue": "#79C0FF",
+               "constant": "#79C0FF",
+               "number": "#A5D6FF",
+               "string": "#A5D6FF",
+               "comment": "#8B949E",
+               "operator": "#FF7B72"
+            }
+         }
+      },
+      {
+         "id": "github_light",
+         "name": "GitHub Light",
+         "colors": {
+            "ui": {
+               "background": "#FFFFFF",
+               "surface": "#F6F8FA",
+               "surfaceSoft": "#EEF2F6",
+               "border": "#D0D7DE",
+               "scrim": "#66000000",
+               "text": "#24292F",
+               "textMuted": "#57606A",
+               "accent": "#0969DA",
+               "codeAccent": "#0969DA",
+               "error": "#CF222E"
+            },
+            "actions": {
+               "play": "#1A7F37",
+               "stop": "#CF222E"
+            },
+            "editor": {
+               "selection": "#B6D7FF",
+               "currentLine": "#F6F8FA"
+            },
+            "widgets": {
+               "colorPickerBorder": "#D0D7DE",
+               "colorPickerThumb": "#FFFFFF",
+               "colorPickerThumbStroke": "#8C000000",
+               "hueSliderMarker": "#FFFFFF",
+               "hueSliderMarkerStroke": "#96000000",
+               "runnerBackground": "#FFFFFF",
+               "runnerEmptyBackground": "#F6F8FA"
+            },
+            "syntax": {
+               "keyword": "#CF222E",
+               "type": "#8250DF",
+               "processing": "#0969DA",
+               "runtimeValue": "#0550AE",
+               "constant": "#0550AE",
+               "number": "#0550AE",
+               "string": "#0A3069",
+               "comment": "#6E7781",
+               "operator": "#CF222E"
+            }
+         }
+      },
+      {
+         "id": "tokyo_night",
+         "name": "Tokyo Night",
+         "colors": {
+            "ui": {
+               "background": "#1A1B26",
+               "surface": "#16161E",
+               "surfaceSoft": "#24283B",
+               "border": "#414868",
+               "scrim": "#7A000000",
+               "text": "#C0CAF5",
+               "textMuted": "#565F89",
+               "accent": "#7AA2F7",
+               "codeAccent": "#7DCFFF",
+               "error": "#F7768E"
+            },
+            "actions": {
+               "play": "#9ECE6A",
+               "stop": "#F7768E"
+            },
+            "editor": {
+               "selection": "#33467C",
+               "currentLine": "#24283B"
+            },
+            "widgets": {
+               "colorPickerBorder": "#414868",
+               "colorPickerThumb": "#FFFFFF",
+               "colorPickerThumbStroke": "#8C000000",
+               "hueSliderMarker": "#FFFFFF",
+               "hueSliderMarkerStroke": "#96000000",
+               "runnerBackground": "#16161E",
+               "runnerEmptyBackground": "#1A1B26"
+            },
+            "syntax": {
+               "keyword": "#BB9AF7",
+               "type": "#2AC3DE",
+               "processing": "#7AA2F7",
+               "runtimeValue": "#7DCFFF",
+               "constant": "#FF9E64",
+               "number": "#FF9E64",
+               "string": "#9ECE6A",
+               "comment": "#565F89",
+               "operator": "#89DDFF"
+            }
+         }
+      },
+      {
+         "id": "ayu_dark",
+         "name": "Ayu Dark",
+         "colors": {
+            "ui": {
+               "background": "#0A0E14",
+               "surface": "#0F1419",
+               "surfaceSoft": "#131721",
+               "border": "#1F2430",
+               "scrim": "#7A000000",
+               "text": "#B3B1AD",
+               "textMuted": "#626A73",
+               "accent": "#FFCC66",
+               "codeAccent": "#59C2FF",
+               "error": "#F07178"
+            },
+            "actions": {
+               "play": "#AAD94C",
+               "stop": "#F07178"
+            },
+            "editor": {
+               "selection": "#253340",
+               "currentLine": "#131721"
+            },
+            "widgets": {
+               "colorPickerBorder": "#1F2430",
+               "colorPickerThumb": "#FFFFFF",
+               "colorPickerThumbStroke": "#8C000000",
+               "hueSliderMarker": "#FFFFFF",
+               "hueSliderMarkerStroke": "#96000000",
+               "runnerBackground": "#0A0E14",
+               "runnerEmptyBackground": "#0F1419"
+            },
+            "syntax": {
+               "keyword": "#FF8F40",
+               "type": "#FFB454",
+               "processing": "#59C2FF",
+               "runtimeValue": "#95E6CB",
+               "constant": "#D2A6FF",
+               "number": "#D2A6FF",
+               "string": "#AAD94C",
+               "comment": "#626A73",
+               "operator": "#F29668"
+            }
+         }
+      },
+      {
+         "id": "ayu_light",
+         "name": "Ayu Light",
+         "colors": {
+            "ui": {
+               "background": "#FAFAFA",
+               "surface": "#FFFFFF",
+               "surfaceSoft": "#F3F4F5",
+               "border": "#E6E9EF",
+               "scrim": "#66000000",
+               "text": "#5C6773",
+               "textMuted": "#ABB0B6",
+               "accent": "#FF9940",
+               "codeAccent": "#55B4D4",
+               "error": "#F07171"
+            },
+            "actions": {
+               "play": "#86B300",
+               "stop": "#F07171"
+            },
+            "editor": {
+               "selection": "#D1E4F4",
+               "currentLine": "#F3F4F5"
+            },
+            "widgets": {
+               "colorPickerBorder": "#E6E9EF",
+               "colorPickerThumb": "#FFFFFF",
+               "colorPickerThumbStroke": "#8C000000",
+               "hueSliderMarker": "#FFFFFF",
+               "hueSliderMarkerStroke": "#96000000",
+               "runnerBackground": "#FFFFFF",
+               "runnerEmptyBackground": "#F3F4F5"
+            },
+            "syntax": {
+               "keyword": "#FA8D3E",
+               "type": "#F2AE49",
+               "processing": "#55B4D4",
+               "runtimeValue": "#4CBF99",
+               "constant": "#A37ACC",
+               "number": "#A37ACC",
+               "string": "#86B300",
+               "comment": "#ABB0B6",
+               "operator": "#ED9366"
+            }
+         }
+      },
+      {
+         "id": "monokai_pro",
+         "name": "Monokai Pro",
+         "colors": {
+            "ui": {
+               "background": "#2D2A2E",
+               "surface": "#221F22",
+               "surfaceSoft": "#403E41",
+               "border": "#5B595C",
+               "scrim": "#7A000000",
+               "text": "#FCFCFA",
+               "textMuted": "#939293",
+               "accent": "#FFD866",
+               "codeAccent": "#78DCE8",
+               "error": "#FF6188"
+            },
+            "actions": {
+               "play": "#A9DC76",
+               "stop": "#FF6188"
+            },
+            "editor": {
+               "selection": "#5B595C",
+               "currentLine": "#403E41"
+            },
+            "widgets": {
+               "colorPickerBorder": "#5B595C",
+               "colorPickerThumb": "#FFFFFF",
+               "colorPickerThumbStroke": "#8C000000",
+               "hueSliderMarker": "#FFFFFF",
+               "hueSliderMarkerStroke": "#96000000",
+               "runnerBackground": "#221F22",
+               "runnerEmptyBackground": "#2D2A2E"
+            },
+            "syntax": {
+               "keyword": "#FF6188",
+               "type": "#FFD866",
+               "processing": "#78DCE8",
+               "runtimeValue": "#AB9DF2",
+               "constant": "#AB9DF2",
+               "number": "#AB9DF2",
+               "string": "#A9DC76",
+               "comment": "#727072",
+               "operator": "#FF6188"
+            }
+         }
+      },
+      {
+         "id": "jetbrains_ide_dark_java",
+         "name": "JetBrains IDE Dark Java Theme",
+         "colors": {
+            "ui": {
+               "background": "#2B2D30",
+               "surface": "#1E1F22",
+               "surfaceSoft": "#313335",
+               "border": "#4E5157",
+               "scrim": "#7A000000",
+               "text": "#DFE1E5",
+               "textMuted": "#8C8C8C",
+               "accent": "#3574F0",
+               "codeAccent": "#589DF6",
+               "error": "#DB5860"
+            },
+            "actions": {
+               "play": "#57965C",
+               "stop": "#DB5860"
+            },
+            "editor": {
+               "selection": "#214283",
+               "currentLine": "#323232"
+            },
+            "widgets": {
+               "colorPickerBorder": "#4E5157",
+               "colorPickerThumb": "#FFFFFF",
+               "colorPickerThumbStroke": "#8C000000",
+               "hueSliderMarker": "#FFFFFF",
+               "hueSliderMarkerStroke": "#96000000",
+               "runnerBackground": "#1E1F22",
+               "runnerEmptyBackground": "#2B2D30"
+            },
+            "syntax": {
+               "keyword": "#CF8E6D",
+               "type": "#B3AE60",
+               "processing": "#56A8F5",
+               "runtimeValue": "#BCBEC4",
+               "constant": "#C77DBB",
+               "number": "#2AACB8",
+               "string": "#6AAB73",
+               "comment": "#7A7E85",
+               "operator": "#BCBEC4"
+            }
+         }
+      },
+      {
+         "id": "vscode_default_dark",
+         "name": "VS Code Default Dark",
+         "colors": {
+            "ui": {
+               "background": "#1E1E1E",
+               "surface": "#252526",
+               "surfaceSoft": "#2D2D2D",
+               "border": "#3C3C3C",
+               "scrim": "#7A000000",
+               "text": "#D4D4D4",
+               "textMuted": "#858585",
+               "accent": "#007ACC",
+               "codeAccent": "#569CD6",
+               "error": "#F14C4C"
+            },
+            "actions": {
+               "play": "#0DBC79",
+               "stop": "#F14C4C"
+            },
+            "editor": {
+               "selection": "#264F78",
+               "currentLine": "#2A2D2E"
+            },
+            "widgets": {
+               "colorPickerBorder": "#454545",
+               "colorPickerThumb": "#FFFFFF",
+               "colorPickerThumbStroke": "#8C000000",
+               "hueSliderMarker": "#FFFFFF",
+               "hueSliderMarkerStroke": "#96000000",
+               "runnerBackground": "#1E1E1E",
+               "runnerEmptyBackground": "#252526"
+            },
+            "syntax": {
+               "keyword": "#569CD6",
+               "type": "#4EC9B0",
+               "processing": "#C586C0",
+               "runtimeValue": "#9CDCFE",
+               "constant": "#4FC1FF",
+               "number": "#B5CEA8",
+               "string": "#CE9178",
+               "comment": "#6A9955",
+               "operator": "#D4D4D4"
+            }
+         }
+      }
+   ]
+}

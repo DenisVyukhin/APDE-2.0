@@ -798,12 +798,12 @@ final class SketchStore {
       if (rootPath.equals(bundledExamplesRootPath)) {
          return;
       }
-      if (copyAssetTreeIfMissing(context.getAssets(), EXAMPLES_ASSET_DIR, examplesDir)) {
+      if (copyAssetTree(context.getAssets(), EXAMPLES_ASSET_DIR, examplesDir)) {
          bundledExamplesRootPath = rootPath;
       }
    }
 
-   private boolean copyAssetTreeIfMissing(AssetManager assets, String assetPath, File target) {
+   private boolean copyAssetTree(AssetManager assets, String assetPath, File target) {
       String[] children;
       try {
          children = assets.list(assetPath);
@@ -815,7 +815,7 @@ final class SketchStore {
             return false;
          }
          for (String child : children) {
-            if (!copyAssetTreeIfMissing(assets, assetPath + "/" + child, new File(target, child))) {
+            if (!copyAssetTree(assets, assetPath + "/" + child, new File(target, child))) {
                return false;
             }
          }
@@ -823,9 +823,6 @@ final class SketchStore {
       }
       if (!looksLikeAssetFile(assetPath)) {
          return target.exists() || target.mkdirs();
-      }
-      if (target.exists()) {
-         return true;
       }
       File parent = target.getParentFile();
       if (parent != null && !parent.exists() && !parent.mkdirs()) {

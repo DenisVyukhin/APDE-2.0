@@ -18,8 +18,13 @@ import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.NoteAdd
+import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.ViewInAr
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.Wallpaper
+import androidx.compose.material.icons.rounded.Watch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -48,6 +53,11 @@ class ControlIconButton(
       const val MODE_ADD_FOLDER = 9
       const val MODE_ADD_FILE = 10
       const val MODE_BACK = 11
+      const val MODE_BUILD_PREVIEW = 12
+      const val MODE_BUILD_APP = 13
+      const val MODE_BUILD_WALLPAPER = 14
+      const val MODE_BUILD_WATCHFACE = 15
+      const val MODE_BUILD_VR = 16
    }
 
    private var iconMode by mutableIntStateOf(mode)
@@ -94,6 +104,11 @@ class ControlIconButton(
                   MODE_ADD_FOLDER -> Icons.Rounded.CreateNewFolder
                   MODE_ADD_FILE -> Icons.Rounded.NoteAdd
                   MODE_BACK -> Icons.AutoMirrored.Rounded.ArrowBack
+                  MODE_BUILD_PREVIEW -> Icons.Rounded.Visibility
+                  MODE_BUILD_APP -> Icons.Rounded.PhoneAndroid
+                  MODE_BUILD_WALLPAPER -> Icons.Rounded.Wallpaper
+                  MODE_BUILD_WATCHFACE -> Icons.Rounded.Watch
+                  MODE_BUILD_VR -> Icons.Rounded.ViewInAr
                   else -> Icons.Rounded.MoreHoriz
                },
                contentDescription = null,

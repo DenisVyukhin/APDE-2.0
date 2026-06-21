@@ -126,8 +126,13 @@ final class AppStrings {
       RENAMED_TAB_TO,
       NO_ERRORS,
       NO_CONSOLE_OUTPUT,
-      CONSOLE_MESSAGE_COPIED
-      ,
+      CONSOLE_MESSAGE_COPIED,
+      COMPILATION_MODE_PREVIEW,
+      COMPILATION_MODE_APP,
+      COMPILATION_MODE_WALLPAPER,
+      COMPILATION_MODE_WATCHFACE_BETA,
+      COMPILATION_MODE_VR,
+      COMPILATION_MODE_TEST_NOTICE,
       SKETCH_DISPLAY_NAME,
       PACKAGE_NAME,
       VERSION_CODE,
@@ -281,6 +286,15 @@ final class AppStrings {
          case NO_ERRORS: return tr("No errors.", "Ошибок нет.");
          case NO_CONSOLE_OUTPUT: return tr("No console output.", "Консоль пуста.");
          case CONSOLE_MESSAGE_COPIED: return tr("Console message copied.", "Сообщение из консоли скопировано.");
+         case COMPILATION_MODE_PREVIEW: return tr("Preview", "Предпросмотр");
+         case COMPILATION_MODE_APP: return tr("App", "Приложение");
+         case COMPILATION_MODE_WALLPAPER: return tr("Wallpaper", "Обои");
+         case COMPILATION_MODE_WATCHFACE_BETA: return tr("Watchface (beta)", "Циферблат (бета)");
+         case COMPILATION_MODE_VR: return "VR";
+         case COMPILATION_MODE_TEST_NOTICE: return tr(
+            "%s selected. This feature is experimental; Preview mode will be used.",
+            "Выбран режим «%s». Функция тестовая; будет использован режим предпросмотра."
+         );
          case SKETCH_DISPLAY_NAME: return tr("Sketch Display Name", "Отображаемое имя скетча");
          case PACKAGE_NAME: return tr("Package Name", "Имя пакета");
          case VERSION_CODE: return tr("Version Code", "Код версии");

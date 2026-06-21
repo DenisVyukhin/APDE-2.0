@@ -35,6 +35,7 @@ import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.PathInterpolator;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -98,6 +99,10 @@ public final class MainActivity extends ComponentActivity {
    private static final String RECENT_DIR_NAME = "Recent";
    private static final long PREVIEW_LOG_FLUSH_DELAY_MS = 120L;
    private static final int MAX_CONSOLE_ENTRIES = 1200;
+   private static final int FILE_PANEL_WIDTH_DP = 300;
+   private static final long FILE_PANEL_OPEN_DURATION_MS = 320L;
+   private static final long FILE_PANEL_CLOSE_DURATION_MS = 320L;
+   private static final PathInterpolator FILE_PANEL_INTERPOLATOR = new PathInterpolator(0.4f, 0f, 0.2f, 1f);
 
    private final Handler runHandler = new Handler(Looper.getMainLooper());
    private final List<SketchFile> files = new ArrayList<>();
@@ -168,6 +173,7 @@ public final class MainActivity extends ComponentActivity {
    private TextView consoleTab;
    private TextView errorsTab;
    private ControlIconButton runButton;
+   private ControlIconButton compilationModeButton;
    private View filePanelScrim;
    private LinearLayout filePanelContainer;
    private LinearLayout fileTreeContent;
@@ -548,11 +554,39 @@ public final class MainActivity extends ComponentActivity {
       runParams.setMargins(0, 0, dp(8), 0);
       toolbar.addView(runButton, runParams);
 
+      compilationModeButton = new ControlIconButton(this, theme, ControlIconButton.MODE_BUILD_PREVIEW);
+      compilationModeButton.setOnClickListener(this::showCompilationModeMenu);
+      LinearLayout.LayoutParams compilationModeParams = iconParams();
+      compilationModeParams.setMargins(0, 0, dp(8), 0);
+      toolbar.addView(compilationModeButton, compilationModeParams);
+
       ControlIconButton more = new ControlIconButton(this, theme, ControlIconButton.MODE_MORE);
       more.setOnClickListener(this::showProjectMenu);
       toolbar.addView(more, iconParams());
 
       return toolbar;
+   }
+
+   private void showCompilationModeMenu(View anchor) {
+      showContextMenu(
+         anchor,
+         dp(220),
+         new ContextMenuItem(s(AppStrings.Key.COMPILATION_MODE_PREVIEW), R.drawable.compilation_mode_preview_24,
+            () -> selectCompilationMode(ControlIconButton.MODE_BUILD_PREVIEW, AppStrings.Key.COMPILATION_MODE_PREVIEW)),
+         new ContextMenuItem(s(AppStrings.Key.COMPILATION_MODE_APP), R.drawable.compilation_mode_app_24,
+            () -> selectCompilationMode(ControlIconButton.MODE_BUILD_APP, AppStrings.Key.COMPILATION_MODE_APP)),
+         new ContextMenuItem(s(AppStrings.Key.COMPILATION_MODE_WALLPAPER), R.drawable.compilation_mode_wallpaper_24,
+            () -> selectCompilationMode(ControlIconButton.MODE_BUILD_WALLPAPER, AppStrings.Key.COMPILATION_MODE_WALLPAPER)),
+         new ContextMenuItem(s(AppStrings.Key.COMPILATION_MODE_WATCHFACE_BETA), R.drawable.compilation_mode_watchface_24,
+            () -> selectCompilationMode(ControlIconButton.MODE_BUILD_WATCHFACE, AppStrings.Key.COMPILATION_MODE_WATCHFACE_BETA)),
+         new ContextMenuItem(s(AppStrings.Key.COMPILATION_MODE_VR), R.drawable.compilation_mode_vr_24,
+            () -> selectCompilationMode(ControlIconButton.MODE_BUILD_VR, AppStrings.Key.COMPILATION_MODE_VR))
+      );
+   }
+
+   private void selectCompilationMode(int buttonMode, AppStrings.Key labelKey) {
+      compilationModeButton.setMode(buttonMode);
+      showToast(strings.format(AppStrings.Key.COMPILATION_MODE_TEST_NOTICE, s(labelKey)));
    }
 
    private LinearLayout createTabsBar() {
@@ -1126,10 +1160,20 @@ public final class MainActivity extends ComponentActivity {
       }
       filePanelScrim.setVisibility(View.VISIBLE);
       filePanelScrim.setAlpha(0f);
-      filePanelScrim.animate().alpha(1f).setDuration(150).start();
+      filePanelScrim.animate().cancel();
+      filePanelScrim.animate()
+         .alpha(1f)
+         .setDuration(FILE_PANEL_OPEN_DURATION_MS)
+         .setInterpolator(FILE_PANEL_INTERPOLATOR)
+         .start();
       filePanelContainer.setVisibility(View.VISIBLE);
-      filePanelContainer.setTranslationX(-dp(330));
-      filePanelContainer.animate().translationX(0f).setDuration(180).start();
+      filePanelContainer.animate().cancel();
+      filePanelContainer.setTranslationX(-dp(FILE_PANEL_WIDTH_DP));
+      filePanelContainer.animate()
+         .translationX(0f)
+         .setDuration(FILE_PANEL_OPEN_DURATION_MS)
+         .setInterpolator(FILE_PANEL_INTERPOLATOR)
+         .start();
       if (fileTreeDirty) {
          filePanelContainer.postDelayed(this::renderFileTreeIfDirty, 80);
       }
@@ -1237,7 +1281,7 @@ public final class MainActivity extends ComponentActivity {
       scrollParams.setMargins(0, dp(12), 0, 0);
       panel.addView(scroll, scrollParams);
 
-      FrameLayout.LayoutParams panelParams = new FrameLayout.LayoutParams(dp(330), FrameLayout.LayoutParams.MATCH_PARENT);
+      FrameLayout.LayoutParams panelParams = new FrameLayout.LayoutParams(dp(FILE_PANEL_WIDTH_DP), FrameLayout.LayoutParams.MATCH_PARENT);
       panelParams.gravity = Gravity.START;
       overlay.addView(panel, panelParams);
       return overlay;
@@ -1249,8 +1293,16 @@ public final class MainActivity extends ComponentActivity {
       }
       filePanelContainer.animate().cancel();
       filePanelScrim.animate().cancel();
-      filePanelScrim.animate().alpha(0f).setDuration(140).start();
-      filePanelContainer.animate().translationX(-filePanelContainer.getWidth()).setDuration(160).withEndAction(() -> {
+      filePanelScrim.animate()
+         .alpha(0f)
+         .setDuration(FILE_PANEL_CLOSE_DURATION_MS)
+         .setInterpolator(FILE_PANEL_INTERPOLATOR)
+         .start();
+      filePanelContainer.animate()
+         .translationX(-filePanelContainer.getWidth())
+         .setDuration(FILE_PANEL_CLOSE_DURATION_MS)
+         .setInterpolator(FILE_PANEL_INTERPOLATOR)
+         .withEndAction(() -> {
          if (filePanelScrim != null) {
             filePanelScrim.setVisibility(View.GONE);
          }
@@ -1311,8 +1363,16 @@ public final class MainActivity extends ComponentActivity {
             if (Math.abs(filePanelContainer.getTranslationX()) > panelWidth * 0.35f) {
                hideFilePanel();
             } else {
-               filePanelContainer.animate().translationX(0f).setDuration(160).start();
-               filePanelScrim.animate().alpha(1f).setDuration(160).start();
+               filePanelContainer.animate()
+                  .translationX(0f)
+                  .setDuration(FILE_PANEL_CLOSE_DURATION_MS)
+                  .setInterpolator(FILE_PANEL_INTERPOLATOR)
+                  .start();
+               filePanelScrim.animate()
+                  .alpha(1f)
+                  .setDuration(FILE_PANEL_CLOSE_DURATION_MS)
+                  .setInterpolator(FILE_PANEL_INTERPOLATOR)
+                  .start();
             }
             return true;
          default:
